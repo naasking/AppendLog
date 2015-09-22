@@ -1,7 +1,7 @@
 # AppendLog
 
 This library provides an efficient append-only log abstraction, which is
-most often found distributed consensus algorithms like Paxos and Raft,
+most often found in distributed consensus algorithms like Paxos and Raft,
 and more recently in event sourcing.
 
 The log contents are completely opaque as it exposes a streaming API
