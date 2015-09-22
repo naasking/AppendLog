@@ -29,9 +29,8 @@ for atomically writing to the log:
         /// <summary>
         /// Atomically append data to the durable store.
         /// </summary>
-        /// <param name="txid">Transaction identifier.</param>
         /// <returns>A stream for writing.</returns>
-        Stream Append(out TransactionId txid);
+        Stream Append();
     }
 
 Writing to the log involves simply calling `Append()`, which returns
