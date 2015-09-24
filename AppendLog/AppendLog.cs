@@ -6,7 +6,7 @@ using System.Linq;
 using System.Text;
 using System.IO;
 
-namespace EventSourcing
+namespace AppendLog
 {
     /// <summary>
     /// A streaming file-based implementation of <see cref="IAppendLog"/>.
