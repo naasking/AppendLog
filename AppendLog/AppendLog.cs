@@ -38,7 +38,7 @@ namespace AppendLog
                 var tmp = new byte[sizeof(long)];
                 var end = ReadNextId(file, tmp);
                 file.Position = lastEvent.Id;
-                //FIXME: I'm assuming that reading/writing an array buffer at a time is atomic across threads and processes.
+                //FIXME: I'm assuming that reading/writing an array buffer is atomic across threads and processes.
                 //I open the write stream appropriately for atomic writes, but should test this extensively.
                 while (file.Position < end)
                 {
@@ -52,38 +52,53 @@ namespace AppendLog
             }
         }
 
-        public TransactionId ReplayTo(TransactionId lastEvent, Stream output)
+        public IEnumerable<Replay> ReplayTo(TransactionId lastEvent, Stream output)
         {
             const int header = sizeof(long) + sizeof(int);
             TransactionId finalId;
             using (var file = Open())
             {
                 var buf = new byte[4096];
-                var nextId = ReadNextId(file, buf);
+                var sync = file.BeginRead(buf, 0, sizeof(long), null, null);
+                yield return new Replay(sync);
+                file.EndRead(sync);
+                var nextId = FillNextId(buf);
                 finalId = new TransactionId { Id = nextId };
                 file.Position = lastEvent.Id;
-                var read = sizeof(long);
+                var read = 0;
                 while (file.Position < nextId)
                 {
                     finalId = WriteId(file.Position, buf);
                     // keep reading until the full length header is read
-                    do read += file.Read(buf, read, header - read);
-                    while (read < header);
+                    do
+                    {
+                        sync = file.BeginRead(buf, read, header - read, null, null);
+                        yield return new Replay(sync);
+                        read += file.EndRead(sync);
+                    } while (read < header);
                     var length = buf[sizeof(long)]           | buf[sizeof(long) + 1] << 8
                                | buf[sizeof(long) + 2] << 16 | buf[sizeof(long) + 3] << 24;
                     // read and write either the full length, or whatever will fit into the buffer
                     var rem = Math.Min(length, buf.Length - read);
-                    read += file.Read(buf, read, rem);
-                    output.Write(buf, 0, read);
-                    // loop until all bytes read/writtten, but don't subtract the header from the length
+                    sync = file.BeginRead(buf, read, rem, null, null);
+                    yield return new Replay(sync);
+                    read += file.EndRead(sync);
+                    sync = output.BeginWrite(buf, 0, read, null, null);
+                    yield return new Replay(sync);
+                    output.EndWrite(sync);
+                    // loop until all bytes read/written, but don't subtract the header from the length
                     for (length -= read - header; length > 0; length -= read)
                     {
-                        read = file.Read(buf, 0, Math.Min(length, buf.Length));
-                        output.Write(buf, 0, read);
+                        sync = file.BeginRead(buf, 0, Math.Min(length, buf.Length), null, null);
+                        yield return new Replay(sync);
+                        read = file.EndRead(sync);
+                        sync = file.BeginWrite(buf, 0, read, null, null);
+                        yield return new Replay(sync);
+                        output.EndWrite(sync);
                     }
                 }
             }
-            return finalId;
+            yield return new Replay(finalId);
         }
 
         FileStream Open()
@@ -96,6 +111,12 @@ namespace AppendLog
             // read the 64-bit value designating the stream length
             file.Read(x, 0, sizeof(long));
             return x[0]       | x[1] << 8  | x[2] << 16 | x[3] << 24
+                 | x[4] << 32 | x[5] << 40 | x[6] << 48 | x[7] << 56;
+        }
+
+        static long FillNextId(byte[] x)
+        {
+            return x[0] | x[1] << 8 | x[2] << 16 | x[3] << 24
                  | x[4] << 32 | x[5] << 40 | x[6] << 48 | x[7] << 56;
         }
 

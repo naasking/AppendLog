@@ -86,7 +86,7 @@ namespace AppendLog
         /// +-------------+---------------+---------------+
         /// </remarks>
         //FIXME: or should I just bite the bullet and standardize the internal format using TxId's that are functions of stream position?
-        TransactionId ReplayTo(TransactionId lastEvent, Stream output);
+        IEnumerable<Replay> ReplayTo(TransactionId lastEvent, Stream output);
 
         /// <summary>
         /// Atomically append data to the durable store.
