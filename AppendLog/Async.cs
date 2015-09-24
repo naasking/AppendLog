@@ -5,17 +5,17 @@ using System.Text;
 
 namespace AppendLog
 {
-    public struct Replay
+    public struct Async<T>
     {
-        TransactionId transaction;
+        T value;
 
-        public Replay(TransactionId transaction)
+        public Async(T value)
             : this()
         {
-            this.transaction = transaction;
+            this.value = value;
         }
 
-        public Replay(IAsyncResult op)
+        public Async(IAsyncResult op)
             : this()
         {
             this.Operation = op;
@@ -23,16 +23,16 @@ namespace AppendLog
 
         public IAsyncResult Operation { get; set; }
 
-        public bool TryGetValue(out TransactionId transaction)
+        public bool TryGetValue(out T value)
         {
             if (Operation == null)
             {
-                transaction = this.transaction;
+                value = this.value;
                 return true;
             }
             else
             {
-                transaction = default(TransactionId);
+                value = default(T);
                 return false;
             }
         }
