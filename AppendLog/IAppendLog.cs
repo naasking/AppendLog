@@ -1,4 +1,5 @@
 ﻿using System;
+using System.Threading.Tasks;
 using System.IO;
 using System.Collections.Generic;
 using System.Linq;
@@ -71,7 +72,7 @@ namespace AppendLog
         /// </summary>
         /// <param name="lastEvent">The last event seen.</param>
         /// <returns>A sequence of transactions since the given event.</returns>
-        IEnumerable<Async<KeyValuePair<TransactionId, Stream>>> Replay(TransactionId lastEvent);
+        Task<KeyValuePair<TransactionId, Stream>> Replay(TransactionId lastEvent);
 
         /// <summary>
         /// Replay the log to a stream.
@@ -86,7 +87,7 @@ namespace AppendLog
         /// +-------------+---------------+---------------+
         /// </remarks>
         //FIXME: or should I just bite the bullet and standardize the internal format using TxId's that are functions of stream position?
-        IEnumerable<Async<TransactionId>> ReplayTo(TransactionId lastEvent, Stream output);
+        Task<TransactionId> ReplayTo(TransactionId lastEvent, Stream output);
 
         /// <summary>
         /// Atomically append data to the durable store.

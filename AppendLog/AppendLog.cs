@@ -1,6 +1,7 @@
 ﻿using System;
 using System.Security.AccessControl;
 using System.Threading;
+using System.Threading.Tasks;
 using System.Collections.Generic;
 using System.Linq;
 using System.Text;
@@ -31,85 +32,62 @@ namespace AppendLog
             this.path = Path.GetFullPath(path);
         }
 
-        public IEnumerable<Async<KeyValuePair<TransactionId, Stream>>> Replay(TransactionId lastEvent)
+        public async Task<KeyValuePair<TransactionId, Stream>> Replay(TransactionId lastEvent)
         {
             using (var file = Open())
             {
                 var tmp = new byte[sizeof(long)];
-                var sync = file.BeginRead(tmp, 0, sizeof(long), null, null);
-                yield return new Async<KeyValuePair<TransactionId, Stream>>(sync);
-                file.EndRead(sync);
+                await file.ReadAsync(tmp, 0, sizeof(long));
                 var end = FillNextId(tmp);
                 file.Position = lastEvent.Id;
                 //FIXME: I'm assuming that reading/writing an array buffer is atomic across threads and processes.
                 //I open the write stream appropriately for atomic writes, but should test this extensively.
-                while (file.Position < end)
+                await file.ReadAsync(tmp, 0, sizeof(int));
+                var length = tmp[0] | tmp[1] << 8 | tmp[2] << 16 | tmp[3] << 24;
+                var data = new byte[length];
+                var read = 0;
+                do
                 {
-                    sync = file.BeginRead(tmp, 0, sizeof(int), null, null);
-                    yield return new Async<KeyValuePair<TransactionId, Stream>>(sync);
-                    file.EndRead(sync);
-                    var length = tmp[0] | tmp[1] << 8 | tmp[2] << 16 | tmp[3] << 24;
-                    var data = new byte[length];
-                    var read = 0;
-                    do
-                    {
-                        sync = file.BeginRead(data, 0, length, null, null);
-                        yield return new Async<KeyValuePair<TransactionId, Stream>>(sync);
-                        read += file.EndRead(sync);
-                    } while (read < length);
-                    yield return new Async<KeyValuePair<TransactionId, Stream>>(new KeyValuePair<TransactionId, Stream>(lastEvent, new MemoryStream(data, false)));
-                    lastEvent.Id += length;
-                }
+                    read += await file.ReadAsync(data, 0, length);
+                } while (read < length);
+                return new KeyValuePair<TransactionId, Stream>(lastEvent, new MemoryStream(data, false));
             }
         }
 
-        public IEnumerable<Async<TransactionId>> ReplayTo(TransactionId lastEvent, Stream output)
+        public async Task<TransactionId> ReplayTo(TransactionId lastEvent, Stream output)
         {
             const int header = sizeof(long) + sizeof(int);
             TransactionId finalId;
             using (var file = Open())
             {
                 var buf = new byte[4096];
-                var sync = file.BeginRead(buf, 0, sizeof(long), null, null);
-                yield return new Async<TransactionId>(sync);
-                file.EndRead(sync);
+                await file.ReadAsync(buf, 0, sizeof(long));
                 var nextId = FillNextId(buf);
                 finalId = new TransactionId { Id = nextId };
+                if (finalId == lastEvent) return finalId;
                 file.Position = lastEvent.Id;
                 var read = 0;
                 while (file.Position < nextId)
                 {
                     finalId = WriteId(file.Position, buf);
                     // keep reading until the full length header is read
-                    do
-                    {
-                        sync = file.BeginRead(buf, read, header - read, null, null);
-                        yield return new Async<TransactionId>(sync);
-                        read += file.EndRead(sync);
-                    } while (read < header);
+                    do read += await file.ReadAsync(buf, read, header - read);
+                    while (read < header);
                     var length = buf[sizeof(long)]           | buf[sizeof(long) + 1] << 8
                                | buf[sizeof(long) + 2] << 16 | buf[sizeof(long) + 3] << 24;
                     // read and write either the full length, or whatever will fit into the buffer
                     var rem = Math.Min(length, buf.Length - read);
-                    sync = file.BeginRead(buf, read, rem, null, null);
-                    yield return new Async<TransactionId>(sync);
-                    read += file.EndRead(sync);
-                    sync = output.BeginWrite(buf, 0, read, null, null);
-                    yield return new Async<TransactionId>(sync);
-                    output.EndWrite(sync);
+                    read += await file.ReadAsync(buf, read, rem);
+                    await output.WriteAsync(buf, 0, read);
                     // loop until all bytes read/written, but don't subtract the header from the length
                     for (length -= read - header; length > 0; length -= read)
                     {
-                        sync = file.BeginRead(buf, 0, Math.Min(length, buf.Length), null, null);
-                        yield return new Async<TransactionId>(sync);
-                        read = file.EndRead(sync);
-                        sync = file.BeginWrite(buf, 0, read, null, null);
-                        yield return new Async<TransactionId>(sync);
-                        output.EndWrite(sync);
+                        read = await file.ReadAsync(buf, 0, Math.Min(length, buf.Length));
+                        await file.WriteAsync(buf, 0, read);
                     }
                 }
             }
-            yield return new Async<TransactionId>(finalId);
+            return finalId;
         }
 
         FileStream Open()
