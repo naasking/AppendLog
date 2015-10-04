@@ -71,8 +71,9 @@ namespace AppendLog
         /// Enumerate the sequence of transactions since <paramref name="lastEvent"/>.
         /// </summary>
         /// <param name="lastEvent">The last event seen.</param>
+        /// <param name="forEach">The delegate that accepts each event when it's ready. FIXME: should return Task{bool} for async support?</param>
         /// <returns>A sequence of transactions since the given event.</returns>
-        Task<KeyValuePair<TransactionId, Stream>> Replay(TransactionId lastEvent);
+        Task Replay(TransactionId lastEvent, Func<TransactionId, Stream, bool> forEach);
 
         /// <summary>
         /// Replay the log to a stream.

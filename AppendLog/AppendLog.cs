@@ -32,7 +32,7 @@ namespace AppendLog
             this.path = Path.GetFullPath(path);
         }
 
-        public async Task<KeyValuePair<TransactionId, Stream>> Replay(TransactionId lastEvent)
+        public async Task Replay(TransactionId lastEvent, Func<TransactionId, Stream, bool> forEach)
         {
             using (var file = Open())
             {
@@ -40,17 +40,22 @@ namespace AppendLog
                 await file.ReadAsync(tmp, 0, sizeof(long));
                 var end = FillNextId(tmp);
                 file.Position = lastEvent.Id;
-                //FIXME: I'm assuming that reading/writing an array buffer is atomic across threads and processes.
+                //FIXME: I'm assuming that reading/writing an array buffer at a time is atomic across threads and processes.
                 //I open the write stream appropriately for atomic writes, but should test this extensively.
-                await file.ReadAsync(tmp, 0, sizeof(int));
-                var length = tmp[0] | tmp[1] << 8 | tmp[2] << 16 | tmp[3] << 24;
-                var data = new byte[length];
-                var read = 0;
-                do
+                while (file.Position < end)
                 {
-                    read += await file.ReadAsync(data, 0, length);
-                } while (read < length);
-                return new KeyValuePair<TransactionId, Stream>(lastEvent, new MemoryStream(data, false));
+                    await file.ReadAsync(tmp, 0, sizeof(int));
+                    var length = tmp[0] | tmp[1] << 8 | tmp[2] << 16 | tmp[3] << 24;
+                    var data = new byte[length];
+                    var read = 0;
+                    do
+                    {
+                        read += await file.ReadAsync(data, 0, length);
+                    } while (read < length);
+                    if (!forEach(lastEvent, new MemoryStream(data, false)))
+                        return;
+                    lastEvent.Id += length;
+                }
             }
         }
 
