@@ -184,6 +184,12 @@ namespace AppendLog
 
             public override void Close()
             {
+                //NOTE FS Atomicity: http://danluu.com/file-consistency/
+                //Moral: the OS can reorder writes such that the write at 0 could happen first, even if the write
+                //is called 2nd. If a crash/power loss happens btw the write at 0 and the writes to the end, the
+                //header is then just pointing at garbage. So call flush to sync data to disk, then write header.
+                Flush(true);
+
                 // write out the 32-bit block length
                 var length = (int)(Position - nextId);
                 buf[0] = (byte)(length         & 0xFFFF);
