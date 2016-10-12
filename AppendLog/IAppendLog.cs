@@ -63,6 +63,28 @@ namespace AppendLog
     }
 
     /// <summary>
+    /// An event enumerator.
+    /// </summary>
+    public interface IEventEnumerator : IDisposable
+    {
+        /// <summary>
+        /// The current transaction.
+        /// </summary>
+        TransactionId Transaction { get; }
+
+        /// <summary>
+        /// The stream encapsulating the event.
+        /// </summary>
+        Stream Stream { get; }
+
+        /// <summary>
+        /// Asynchronously advance the enumerator to the next event.
+        /// </summary>
+        /// <returns></returns>
+        Task<bool> MoveNext();
+    }
+
+    /// <summary>
     /// Interface for an atomic, durable transaction log.
     /// </summary>
     public interface IAppendLog : IDisposable
@@ -71,29 +93,63 @@ namespace AppendLog
         /// Enumerate the sequence of transactions since <paramref name="lastEvent"/>.
         /// </summary>
         /// <param name="lastEvent">The last event seen.</param>
-        /// <param name="forEach">The delegate that accepts each event when it's ready. FIXME: should return Task{bool} for async support?</param>
         /// <returns>A sequence of transactions since the given event.</returns>
-        Task Replay(TransactionId lastEvent, Func<TransactionId, Stream, bool> forEach);
-
-        /// <summary>
-        /// Replay the log to a stream.
-        /// </summary>
-        /// <param name="lastEvent">The event at which to replay.</param>
-        /// <param name="output">The stream to write to.</param>
-        /// <returns>The last replayed transaction.</returns>
         /// <remarks>
         /// The format of the output data is simply a sequence of records:
         /// +-------------+---------------+---------------+
         /// | 64-bit TxId | 32-bit length | length * byte |
         /// +-------------+---------------+---------------+
         /// </remarks>
-        //FIXME: or should I just bite the bullet and standardize the internal format using TxId's that are functions of stream position?
-        Task<TransactionId> ReplayTo(TransactionId lastEvent, Stream output);
-
+        IEventEnumerator Replay(TransactionId lastEvent);
+        
         /// <summary>
         /// Atomically append data to the durable store.
         /// </summary>
         /// <returns>A stream for writing.</returns>
         Stream Append();
+    }
+
+    /// <summary>
+    /// Extensions on <see cref="IAppendLog"/>.
+    /// </summary>
+    public static class AppendLogs
+    {
+        /// <summary>
+        /// Replay a log to an output stream.
+        /// </summary>
+        /// <param name="log"></param>
+        /// <param name="lastEvent"></param>
+        /// <param name="output"></param>
+        /// <returns></returns>
+        public static async Task<TransactionId> ReplayTo(this IAppendLog log, TransactionId lastEvent, Stream output)
+        {
+            using (var ie = log.Replay(lastEvent))
+            {
+                while (await ie.MoveNext())
+                {
+                    await ie.Stream.CopyToAsync(output);
+                }
+                return ie.Transaction;
+            }
+        }
+
+        /// <summary>
+        /// Replay events using a callback.
+        /// </summary>
+        /// <param name="log"></param>
+        /// <param name="lastEvent"></param>
+        /// <param name="forEach"></param>
+        /// <returns></returns>
+        public static async Task Replay(this IAppendLog log, TransactionId lastEvent, Func<TransactionId, Stream, bool> forEach)
+        {
+            using (var ie = log.Replay(lastEvent))
+            {
+                while (await ie.MoveNext())
+                {
+                    if (!forEach(ie.Transaction, ie.Stream))
+                        return;
+                }
+            }
+        }
     }
 }

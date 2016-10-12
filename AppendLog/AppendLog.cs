@@ -24,6 +24,8 @@ namespace AppendLog
         //FIXME: I should place a db version number at the beginning so I can perform future upgrades if needed.
         //Also, this means the atomic update to the nextId doesn't take place at Pos=0, so no need to adjust it
         //before flush.
+
+        //FIXME: need to add CRC to the headers to mitigate corruption issues.
         string path;
 
         public StreamedFileLog(string path)
@@ -32,69 +34,56 @@ namespace AppendLog
             this.path = Path.GetFullPath(path);
         }
 
-        public async Task Replay(TransactionId lastEvent, Func<TransactionId, Stream, bool> forEach)
+        sealed class EventEnumerator : IEventEnumerator
         {
-            using (var file = Open())
+            FileStream file;
+            TransactionId next;
+            public TransactionId Transaction { get; internal set; }
+            public Stream Stream { get; internal set; }
+
+            public EventEnumerator(StreamedFileLog log, TransactionId lastEvent)
             {
+                file = log.Open();
+                next = lastEvent;
+                file.Position = next.Id;
+            }
+
+            public async Task<bool> MoveNext()
+            {
+                if (file == null) throw new ObjectDisposedException();
                 var tmp = new byte[sizeof(long)];
                 await file.ReadAsync(tmp, 0, sizeof(long));
                 var end = FillNextId(tmp);
-                file.Position = lastEvent.Id;
+                if (next.Id >= end)
+                    return false;
                 //FIXME: I'm assuming that reading/writing an array buffer at a time is atomic across threads and processes.
                 //I open the write stream appropriately for atomic writes, but should test this extensively.
-                while (file.Position < end)
-                {
-                    await file.ReadAsync(tmp, 0, sizeof(int));
-                    var length = tmp[0] | tmp[1] << 8 | tmp[2] << 16 | tmp[3] << 24;
-                    var data = new byte[length];
-                    var read = 0;
-                    do
-                    {
-                        read += await file.ReadAsync(data, 0, length);
-                    } while (read < length);
-                    if (!forEach(lastEvent, new MemoryStream(data, false)))
-                        return;
-                    lastEvent.Id += length;
-                }
-            }
-        }
-
-        public async Task<TransactionId> ReplayTo(TransactionId lastEvent, Stream output)
-        {
-            const int header = sizeof(long) + sizeof(int);
-            TransactionId finalId;
-            using (var file = Open())
-            {
-                var buf = new byte[4096];
-                await file.ReadAsync(buf, 0, sizeof(long));
-                var nextId = FillNextId(buf);
-                finalId = new TransactionId { Id = nextId };
-                if (finalId == lastEvent) return finalId;
-                file.Position = lastEvent.Id;
+                await file.ReadAsync(tmp, 0, sizeof(int));
+                //FIXME: replace in-memory buffering with a bounded stream, ie.
+                // new BoundedStream(file, start:next.Id+header, end:next.Id+header+length);
+                var length = tmp[0] | tmp[1] << 8 | tmp[2] << 16 | tmp[3] << 24;
+                var data = new byte[length];
                 var read = 0;
-                while (file.Position < nextId)
-                {
-                    finalId = WriteId(file.Position, buf);
-                    // keep reading until the full length header is read
-                    do read += await file.ReadAsync(buf, read, header - read);
-                    while (read < header);
-                    var length = buf[sizeof(long)]           | buf[sizeof(long) + 1] << 8
-                               | buf[sizeof(long) + 2] << 16 | buf[sizeof(long) + 3] << 24;
-                    // read and write either the full length, or whatever will fit into the buffer
-                    var rem = Math.Min(length, buf.Length - read);
-                    read += await file.ReadAsync(buf, read, rem);
-                    await output.WriteAsync(buf, 0, read);
-                    // loop until all bytes read/written, but don't subtract the header from the length
-                    for (length -= read - header; length > 0; length -= read)
-                    {
-                        read = await file.ReadAsync(buf, 0, Math.Min(length, buf.Length));
-                        await file.WriteAsync(buf, 0, read);
-                    }
-                }
+                do read += await file.ReadAsync(data, 0, length);
+                while (read < length);
+                Stream = new MemoryStream(data, false);
+                Transaction = next;
+                next = new TransactionId { Id = Transaction.Id + length };
+                return true;
             }
-            return finalId;
+
+            public void Dispose()
+            {
+                var x = Interlocked.Exchange(ref file, null);
+                if (x != null) x.Dispose();
+            }
         }
 
+        public IEventEnumerator Replay(TransactionId lastEvent)
+        {
+            return new EventEnumerator(this, lastEvent);
+        }
+        
         FileStream Open()
         {
             return new FileStream(path, FileMode.OpenOrCreate, FileAccess.Read, FileShare.ReadWrite);
