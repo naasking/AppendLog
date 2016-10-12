@@ -50,7 +50,7 @@ namespace AppendLog
 
             public async Task<bool> MoveNext()
             {
-                if (file == null) throw new ObjectDisposedException();
+                if (file == null) throw new ObjectDisposedException("IEventEnumerator");
                 var tmp = new byte[sizeof(long)];
                 await file.ReadAsync(tmp, 0, sizeof(long));
                 var end = FillNextId(tmp);
