@@ -36,14 +36,16 @@ namespace AppendLog
 
         sealed class EventEnumerator : IEventEnumerator
         {
+            StreamedFileLog log;
             FileStream file;
             TransactionId next;
             public TransactionId Transaction { get; internal set; }
             public Stream Stream { get; internal set; }
 
-            public EventEnumerator(StreamedFileLog log, TransactionId lastEvent)
+            public EventEnumerator(StreamedFileLog slog, TransactionId lastEvent)
             {
                 file = log.Open();
+                log = slog;
                 next = lastEvent;
                 file.Position = next.Id;
             }
@@ -59,14 +61,8 @@ namespace AppendLog
                 //FIXME: I'm assuming that reading/writing an array buffer at a time is atomic across threads and processes.
                 //I open the write stream appropriately for atomic writes, but should test this extensively.
                 await file.ReadAsync(tmp, 0, sizeof(int));
-                //FIXME: replace in-memory buffering with a bounded stream, ie.
-                // new BoundedStream(file, start:next.Id+header, end:next.Id+header+length);
                 var length = tmp[0] | tmp[1] << 8 | tmp[2] << 16 | tmp[3] << 24;
-                var data = new byte[length];
-                var read = 0;
-                do read += await file.ReadAsync(data, 0, length);
-                while (read < length);
-                Stream = new MemoryStream(data, false);
+                Stream = new BoundedStream(log, file.Position, length);
                 Transaction = next;
                 next = new TransactionId { Id = Transaction.Id + length };
                 return true;
@@ -153,10 +149,10 @@ namespace AppendLog
             public override long Seek(long offset, SeekOrigin origin)
             {
                 //FIXME: not sure if I really need this since I open the file in AppendData/Append mode w/ sequential scan
-                var newpos = origin == SeekOrigin.Begin   ? offset:
+                var newpos = origin == SeekOrigin.Begin   ? nextId + offset:
                              origin == SeekOrigin.Current ? Position + offset:
                                                             Length + offset;
-                if (newpos <= nextId + sizeof(int)) throw new ArgumentOutOfRangeException("offset", "Cannot seek before the end of the log.");
+                if (newpos <= nextId + sizeof(int)) throw new ArgumentException("Cannot seek before the end of the log.", "offset");
                 return base.Seek(offset, origin);
             }
 
@@ -166,7 +162,7 @@ namespace AppendLog
                 set
                 {
                     //FIXME: not sure if I really need this since I open the file in AppendData/Append mode
-                    if (value <= nextId + +sizeof(int)) throw new ArgumentOutOfRangeException("value", "Cannot seek before the end of the log.");
+                    if (value <= nextId + sizeof(int)) throw new ArgumentOutOfRangeException("value", "Cannot seek before the end of the log.");
                     base.Position = value;
                 }
             }
@@ -201,6 +197,62 @@ namespace AppendLog
                 // wait until all data is written to disk
                 Flush(true);
                 base.Close();
+            }
+        }
+
+        /// <summary>
+        /// A file stream that's bounded.
+        /// </summary>
+        sealed class BoundedStream : FileStream
+        {
+            long start;
+            long end;
+
+            public BoundedStream(StreamedFileLog log, long start, int length)
+                : base(log.path, FileMode.Open, FileAccess.Read, FileShare.ReadWrite)
+            {
+                this.start = start;
+                this.end = start + length;
+                base.Position = start;
+            }
+
+            public override long Seek(long offset, SeekOrigin origin)
+            {
+                var newpos = origin == SeekOrigin.Begin   ? start + offset:
+                             origin == SeekOrigin.Current ? Position + offset:
+                                                            Length + offset;
+                if (newpos < start) throw new ArgumentException("Cannot seek before the end of the log.", "offset");
+                if (newpos >= end) throw new ArgumentException("Cannot seek past the end of the log.", "offset");
+                return base.Seek(offset, origin);
+            }
+
+            public override long Position
+            {
+                get { return base.Position; }
+                set
+                {
+                    if (value < start) throw new ArgumentException("Cannot seek before the end of the log.", "offset");
+                    if (value >= end) throw new ArgumentException("Cannot seek past the end of the log.", "offset");
+                    base.Position = value;
+                }
+            }
+
+            public override int Read(byte[] array, int offset, int count)
+            {
+                count = (int)Math.Min(end - Position, count);
+                return base.Read(array, offset, count);
+            }
+
+            public override IAsyncResult BeginRead(byte[] array, int offset, int numBytes, AsyncCallback userCallback, object stateObject)
+            {
+                numBytes = (int)Math.Min(end - Position, numBytes);
+                return base.BeginRead(array, offset, numBytes, userCallback, stateObject);
+            }
+
+            public override int ReadByte()
+            {
+                if (Position >= end) throw new ArgumentException("Cannot seek past the end of the log.");
+                return base.ReadByte();
             }
         }
     }
