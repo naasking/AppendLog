@@ -32,7 +32,7 @@ namespace AppendLog
             using (var fs = File.Open(path, FileMode.OpenOrCreate, FileAccess.ReadWrite, FileShare.None))
             {
                 var buf = new byte[sizeof(ulong)];
-                if (buf.Length == 0)
+                if (fs.Length == 0)
                 {
                     VERSION.WriteId(buf);
                     fs.Write(buf, 0, buf.Length);
@@ -60,9 +60,9 @@ namespace AppendLog
             return new EventEnumerator(this, lastEvent);
         }
 
-        public Stream Append()
+        public Stream Append(bool async, out TransactionId transaction)
         {
-            return new TransactedStream(this);
+            return new TransactedStream(this, async, out transaction);
         }
 
         public void Dispose()
@@ -144,18 +144,16 @@ namespace AppendLog
         /// </remarks>
         sealed class TransactedStream : FileStream
         {
-            FileLog log;
             long nextId;
             byte[] buf;
 
-            public TransactedStream(FileLog log)
-                : base(log.path, FileMode.Append, FileSystemRights.AppendData, FileShare.Read, 4070, FileOptions.SequentialScan)
+            public TransactedStream(FileLog log, bool async, out TransactionId txid)
+                : base(log.path, FileMode.Append, FileAccess.ReadWrite, FileShare.Read, 4096, async)
             {
-                // opened stream using atomic writes:
-                // http://stackoverflow.com/questions/1862309/how-can-i-do-an-atomic-write-append-in-c-or-how-do-i-get-files-opened-with-the
-                this.log = log;
+                // open the file with exclusive write access and in async mode
                 this.buf = new byte[sizeof(long)];
                 this.nextId = ReadNextId(this, buf);
+                txid = new TransactionId { Id = nextId };
                 base.Position = nextId + sizeof(int); // seek past the length header
             }
 

@@ -1,11 +1,11 @@
 # AppendLog
 
-This library provides an efficient append-only log abstraction, which is
-most often found in distributed consensus algorithms like Paxos and Raft,
+This library provides an efficient, fully asynchronous, append-only log abstraction,
+which is most often found in distributed consensus algorithms like Paxos and Raft,
 and more recently in event sourcing.
 
-The log contents are completely opaque as it exposes a streaming API
-for atomically writing to the log:
+The log contents are completely opaque as it exposes a streaming API for atomically
+writing to the log:
 
     /// <summary>
     /// Interface for an atomic, durable transaction log.
@@ -13,33 +13,54 @@ for atomically writing to the log:
     public interface IAppendLog : IDisposable
     {
         /// <summary>
-        /// Enumerate the sequence of transactions since <paramref name="lastEvent"/>.
+        /// The first transaction.
         /// </summary>
-        /// <param name="lastEvent">The last event seen.</param>
-        /// <returns>A sequence of transactions since the given event.</returns>
-        IEnumerable<KeyValuePair<TransactionId, Stream>> Replay(TransactionId lastEvent);
+        TransactionId First { get;  }
 
-        /// <summary>
-        /// Replay the log to a stream.
-        /// </summary>
-        /// <param name="lastEvent">The event at which to replay.</param>
-        /// <param name="output">The stream to write to.</param>
-        void ReplayTo(TransactionId lastEvent, Stream output);
-		
         /// <summary>
         /// Atomically append data to the durable store.
         /// </summary>
         /// <returns>A stream for writing.</returns>
         Stream Append();
+
+        /// <summary>
+        /// Enumerate the sequence of transactions since <paramref name="lastEvent"/>.
+        /// </summary>
+        /// <param name="lastEvent">The last event seen.</param>
+        /// <returns>An enumerator over the transactions that occurred since the given event.</returns>
+        IEventEnumerator Replay(TransactionId lastEvent);
+    }
+
+    /// <summary>
+    /// An event enumerator.
+    /// </summary>
+    public interface IEventEnumerator : IDisposable
+    {
+        /// <summary>
+        /// The current transaction.
+        /// </summary>
+        TransactionId Transaction { get; }
+
+        /// <summary>
+        /// The stream containing the current event.
+        /// </summary>
+        Stream Stream { get; }
+
+        /// <summary>
+        /// Asynchronously advance the enumerator to the next event.
+        /// </summary>
+        /// <returns></returns>
+        Task<bool> MoveNext();
     }
 
 Writing to the log involves simply calling `Append()`, which returns
-a stream to which you can write, but not read. When you dispose the
-stream, the log is updated atomically with the new data. Only a single
-writer can call Append() at any given time, and this exclusion works
-across processes too. Writing to the stream will most often utilize
-some serialization API to write out application-specific types, ie.
-commands for distributed consensus, events for event sourcing, etc.
+a bounded stream to which you can write, but not read. When you dispose
+the stream, the log is updated atomically with the new data. Only a
+single writer can call Append() at any given time, and this exclusion
+works across processes too.
+
+Writing to the stream can utilize any serialization API that uses the
+standard .NET System.IO.Stream abstractions.
 
 Each TransactionId is a marker for the beginning of an `Append()`
 event, which can be later used to replay the log's events.

@@ -4,6 +4,7 @@ using System.IO;
 using System.Collections.Generic;
 using System.Linq;
 using System.Text;
+using System.Diagnostics;
 
 namespace AppendLog
 {
@@ -73,7 +74,7 @@ namespace AppendLog
         TransactionId Transaction { get; }
 
         /// <summary>
-        /// The stream encapsulating the event.
+        /// The stream containing the current event.
         /// </summary>
         Stream Stream { get; }
 
@@ -110,8 +111,10 @@ namespace AppendLog
         /// <summary>
         /// Atomically append data to the durable store.
         /// </summary>
+        /// <param name="async">True if the stream should support efficient asynchronous operations, false otherwise.</param>
+        /// <param name="transaction">The transaction being written.</param>
         /// <returns>A stream for writing.</returns>
-        Stream Append();
+        Stream Append(bool async, out TransactionId transaction);
     }
 
     /// <summary>
@@ -158,9 +161,11 @@ namespace AppendLog
                 var buf = new byte[sizeof(long)];
                 while (await ie.MoveNext())
                 {
-                    using (var output = target.Append())
+                    TransactionId ignore;
+                    using (var output = target.Append(true, out ignore))
                     {
                         lastEvent = ie.Transaction;
+                        Debug.Assert(ignore == lastEvent);
                         lastEvent.Id.WriteId(buf);
                         await output.WriteAsync(buf, 0, buf.Length);
                         await ie.Stream.CopyToAsync(output);
@@ -187,6 +192,18 @@ namespace AppendLog
                         return;
                 }
             }
+        }
+
+        /// <summary>
+        /// Replay events using a callback.
+        /// </summary>
+        /// <param name="log"></param>
+        /// <param name="async"></param>
+        /// <returns></returns>
+        public static Stream Append(this IAppendLog log, bool async)
+        {
+            TransactionId ignore;
+            return log.Append(async, out ignore);
         }
 
         internal static long FillNextId(this byte[] x)
