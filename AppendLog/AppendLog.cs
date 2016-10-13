@@ -20,10 +20,6 @@ namespace AppendLog
         //write to a different file than the one we're reading from, initialized with a new base offset. We
         //can then either copy the entries starting at the new base into the new file, or change the read
         //logic to also open the new file when it's done with the read file. The latter is preferable.
-
-        //FIXME: I should place a db version number at the beginning so I can perform future upgrades if needed.
-        //Also, this means the atomic update to the nextId doesn't take place at Pos=0, so no need to adjust it
-        //before flush.
         string path;
 
         const long VERSION = 0x01;
@@ -96,7 +92,7 @@ namespace AppendLog
             {
                 file = log.Open();
                 log = slog;
-                // skip header if default TransactionId
+                // skip version header if default TransactionId
                 next = lastEvent.Id == 0 ? log.First : lastEvent;
                 file.Position = next.Id;
             }
