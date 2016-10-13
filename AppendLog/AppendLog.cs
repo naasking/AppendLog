@@ -239,8 +239,7 @@ namespace AppendLog
 
             public override int Read(byte[] array, int offset, int count)
             {
-                count = (int)Math.Min(end - Position, count);
-                return base.Read(array, offset, count);
+                return base.Read(array, offset, (int)Math.Min(end - Position, count));
             }
 
             public override IAsyncResult BeginRead(byte[] array, int offset, int numBytes, AsyncCallback userCallback, object stateObject)
