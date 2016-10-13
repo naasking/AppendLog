@@ -90,6 +90,11 @@ namespace AppendLog
     public interface IAppendLog : IDisposable
     {
         /// <summary>
+        /// The first transaction.
+        /// </summary>
+        TransactionId First { get;  }
+
+        /// <summary>
         /// Enumerate the sequence of transactions since <paramref name="lastEvent"/>.
         /// </summary>
         /// <param name="lastEvent">The last event seen.</param>
@@ -125,12 +130,44 @@ namespace AppendLog
         {
             using (var ie = log.Replay(lastEvent))
             {
+                var buf = new byte[sizeof(long)];
                 while (await ie.MoveNext())
                 {
+                    ie.Transaction.Id.WriteId(buf);
+                    await output.WriteAsync(buf, 0, buf.Length);
+                    ie.Stream.Length.WriteId(buf);
+                    await output.WriteAsync(buf, 0, buf.Length);
                     await ie.Stream.CopyToAsync(output);
+                    lastEvent = ie.Transaction;
                 }
-                return ie.Transaction;
             }
+            return lastEvent;
+        }
+
+        /// <summary>
+        /// Replay a log to an output stream.
+        /// </summary>
+        /// <param name="log"></param>
+        /// <param name="lastEvent"></param>
+        /// <param name="output"></param>
+        /// <returns></returns>
+        public static async Task<TransactionId> ReplayTo(this IAppendLog log, TransactionId lastEvent, IAppendLog target)
+        {
+            using (var ie = log.Replay(lastEvent))
+            {
+                var buf = new byte[sizeof(long)];
+                while (await ie.MoveNext())
+                {
+                    using (var output = target.Append())
+                    {
+                        lastEvent = ie.Transaction;
+                        lastEvent.Id.WriteId(buf);
+                        await output.WriteAsync(buf, 0, buf.Length);
+                        await ie.Stream.CopyToAsync(output);
+                    }
+                }
+            }
+            return lastEvent;
         }
 
         /// <summary>
@@ -140,16 +177,35 @@ namespace AppendLog
         /// <param name="lastEvent"></param>
         /// <param name="forEach"></param>
         /// <returns></returns>
-        public static async Task Replay(this IAppendLog log, TransactionId lastEvent, Func<TransactionId, Stream, bool> forEach)
+        public static async Task Replay(this IAppendLog log, TransactionId lastEvent, Func<TransactionId, Stream, Task<bool>> forEach)
         {
             using (var ie = log.Replay(lastEvent))
             {
                 while (await ie.MoveNext())
                 {
-                    if (!forEach(ie.Transaction, ie.Stream))
+                    if (!await forEach(ie.Transaction, ie.Stream))
                         return;
                 }
             }
+        }
+
+        internal static long FillNextId(this byte[] x)
+        {
+            return x[0] | x[1] << 8 | x[2] << 16 | x[3] << 24
+                 | x[4] << 32 | x[5] << 40 | x[6] << 48 | x[7] << 56;
+        }
+
+        internal static TransactionId WriteId(this long id, byte[] x)
+        {
+            x[0] = (byte)(id & 0xFFFF);
+            x[1] = (byte)((id >> 8) & 0xFFFF);
+            x[2] = (byte)((id >> 16) & 0xFFFF);
+            x[3] = (byte)((id >> 24) & 0xFFFF);
+            x[4] = (byte)((id >> 32) & 0xFFFF);
+            x[5] = (byte)((id >> 40) & 0xFFFF);
+            x[6] = (byte)((id >> 48) & 0xFFFF);
+            x[7] = (byte)((id >> 56) & 0xFFFF);
+            return new TransactionId { Id = id };
         }
     }
 }

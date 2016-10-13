@@ -12,7 +12,7 @@ namespace AppendLog
     /// <summary>
     /// A streaming file-based implementation of <see cref="IAppendLog"/>.
     /// </summary>
-    public sealed class StreamedFileLog : IAppendLog
+    public sealed class FileLog : IAppendLog
     {
         //FIXME: use 128 bit transaction ids, and store the "base" offset at the beginning of the db file.
 
@@ -24,29 +24,80 @@ namespace AppendLog
         //FIXME: I should place a db version number at the beginning so I can perform future upgrades if needed.
         //Also, this means the atomic update to the nextId doesn't take place at Pos=0, so no need to adjust it
         //before flush.
-
-        //FIXME: need to add CRC to the headers to mitigate corruption issues.
         string path;
 
-        public StreamedFileLog(string path)
+        const long VERSION = 0x01;
+
+        public FileLog(string path)
         {
             if (path == null) throw new ArgumentNullException("path");
             this.path = Path.GetFullPath(path);
+            // check the file's version number if file exists, else write it out
+            using (var fs = File.Open(path, FileMode.OpenOrCreate, FileAccess.ReadWrite, FileShare.None))
+            {
+                var buf = new byte[sizeof(ulong)];
+                if (buf.Length == 0)
+                {
+                    VERSION.WriteId(buf);
+                    fs.Write(buf, 0, buf.Length);
+                }
+                else
+                {
+                    fs.Read(buf, 0, buf.Length);
+                    var vers = buf.FillNextId();
+                    if (vers != VERSION)
+                    {
+                        throw new NotSupportedException(string.Format("File log expects version {0}.{1}.{2} but found version {3}.{4}.{5}",
+                            Major(VERSION), Minor(VERSION), Revision(VERSION), Major(vers), Minor(vers), Revision(vers)));
+                    }
+                }
+            }
         }
+
+        public TransactionId First
+        {
+            get { return new TransactionId { Id = sizeof(ulong) }; }
+        }
+
+        public IEventEnumerator Replay(TransactionId lastEvent)
+        {
+            return new EventEnumerator(this, lastEvent);
+        }
+
+        public Stream Append()
+        {
+            return new TransactedStream(this);
+        }
+
+        public void Dispose()
+        {
+            // should track outstanding write stream and dispose of it?
+        }
+
+        #region Internals
+        static long Major(long x)    { return 0x1FFFFF & (x >> (64 - 21)); }
+        static long Minor(long x)    { return 0x1FFFFF & (x >> (64 - 42)); }
+        static long Revision(long x) { return 0x1FFFFF & x; }
 
         sealed class EventEnumerator : IEventEnumerator
         {
-            StreamedFileLog log;
+            FileLog log;
             FileStream file;
             TransactionId next;
             public TransactionId Transaction { get; internal set; }
             public Stream Stream { get; internal set; }
 
-            public EventEnumerator(StreamedFileLog slog, TransactionId lastEvent)
+            ~EventEnumerator()
+            {
+                Dispose();
+            }
+
+            public EventEnumerator(FileLog slog, TransactionId lastEvent)
             {
                 file = log.Open();
                 log = slog;
-                next = lastEvent;
+                // skip header if default TransactionId
+                next = lastEvent.Id == 0 ? log.First : lastEvent;
                 file.Position = next.Id;
             }
 
@@ -55,7 +106,7 @@ namespace AppendLog
                 if (file == null) throw new ObjectDisposedException("IEventEnumerator");
                 var tmp = new byte[sizeof(long)];
                 await file.ReadAsync(tmp, 0, sizeof(long));
-                var end = FillNextId(tmp);
+                var end = tmp.FillNextId();
                 if (next.Id >= end)
                     return false;
                 //FIXME: I'm assuming that reading/writing an array buffer at a time is atomic across threads and processes.
@@ -74,11 +125,6 @@ namespace AppendLog
                 if (x != null) x.Dispose();
             }
         }
-
-        public IEventEnumerator Replay(TransactionId lastEvent)
-        {
-            return new EventEnumerator(this, lastEvent);
-        }
         
         FileStream Open()
         {
@@ -89,38 +135,9 @@ namespace AppendLog
         {
             // read the 64-bit value designating the stream length
             file.Read(x, 0, sizeof(long));
-            return FillNextId(x);
+            return x.FillNextId();
         }
-
-        static long FillNextId(byte[] x)
-        {
-            return x[0] | x[1] << 8 | x[2] << 16 | x[3] << 24
-                 | x[4] << 32 | x[5] << 40 | x[6] << 48 | x[7] << 56;
-        }
-
-        static TransactionId WriteId(long id, byte[] x)
-        {
-            x[0] = (byte)(id         & 0xFFFF);
-            x[1] = (byte)((id >> 8)  & 0xFFFF);
-            x[2] = (byte)((id >> 16) & 0xFFFF);
-            x[3] = (byte)((id >> 24) & 0xFFFF);
-            x[4] = (byte)((id >> 32) & 0xFFFF);
-            x[5] = (byte)((id >> 40) & 0xFFFF);
-            x[6] = (byte)((id >> 48) & 0xFFFF);
-            x[7] = (byte)((id >> 56) & 0xFFFF);
-            return new TransactionId { Id = id };
-        }
-
-        public Stream Append()
-        {
-            return new TransactedStream(this);
-        }
-
-        public void Dispose()
-        {
-            // should track outstanding write stream and dispose of it?
-        }
-
+        
         /// <summary>
         /// A file stream that updates the transaction identifiers embedded in file upon close.
         /// </summary>
@@ -131,11 +148,11 @@ namespace AppendLog
         /// </remarks>
         sealed class TransactedStream : FileStream
         {
-            StreamedFileLog log;
+            FileLog log;
             long nextId;
             byte[] buf;
 
-            public TransactedStream(StreamedFileLog log)
+            public TransactedStream(FileLog log)
                 : base(log.path, FileMode.Append, FileSystemRights.AppendData, FileShare.Read, 4070, FileOptions.SequentialScan)
             {
                 // opened stream using atomic writes:
@@ -185,15 +202,13 @@ namespace AppendLog
                 Write(buf, 0, sizeof(int));
 
                 // write out the new 64-bit txid
-                var txid = nextId + length;
-                WriteId(txid, buf);
-                base.Position = 0;
-                Write(buf, 0, sizeof(long));
-
-                // ensure position is not at the beginning of the file due to CLR bug fixed in .net 4.5:
+                // position is not at the beginning of the file, so we shouldn't suffer from CLR bug fixed in .net 4.5:
                 // https://connect.microsoft.com/VisualStudio/feedback/details/792434/flush-true-does-not-always-flush-when-it-should
-                ++base.Position;
-
+                var txid = nextId + length;
+                txid.WriteId(buf);
+                base.Position = sizeof(long); // skip version #
+                Write(buf, 0, sizeof(long));
+                
                 // wait until all data is written to disk
                 Flush(true);
                 base.Close();
@@ -208,7 +223,7 @@ namespace AppendLog
             long start;
             long end;
 
-            public BoundedStream(StreamedFileLog log, long start, int length)
+            public BoundedStream(FileLog log, long start, int length)
                 : base(log.path, FileMode.Open, FileAccess.Read, FileShare.ReadWrite)
             {
                 this.start = start;
@@ -237,6 +252,11 @@ namespace AppendLog
                 }
             }
 
+            public override long Length
+            {
+                get { return end - start; }
+            }
+
             public override int Read(byte[] array, int offset, int count)
             {
                 return base.Read(array, offset, (int)Math.Min(end - Position, count));
@@ -254,5 +274,6 @@ namespace AppendLog
                 return base.ReadByte();
             }
         }
+        #endregion
     }
 }
