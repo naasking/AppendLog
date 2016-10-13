@@ -258,8 +258,7 @@ namespace AppendLog
 
             public override IAsyncResult BeginRead(byte[] array, int offset, int numBytes, AsyncCallback userCallback, object stateObject)
             {
-                numBytes = (int)Math.Min(end - Position, numBytes);
-                return base.BeginRead(array, offset, numBytes, userCallback, stateObject);
+                return base.BeginRead(array, offset, (int)Math.Min(end - Position, numBytes), userCallback, stateObject);
             }
 
             public override int ReadByte()
