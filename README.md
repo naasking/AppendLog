@@ -1,6 +1,6 @@
 # AppendLog
 
-This library provides an efficient, fully asynchronous, append-only log abstraction,
+This library provides an efficient, asynchronous, append-only log abstraction,
 which is most often found in distributed consensus algorithms like Paxos and Raft,
 and more recently in event sourcing.
 
@@ -54,17 +54,20 @@ writing to the log:
     }
 
 Writing to the log involves simply calling `Append()`, which returns
-a bounded stream to which you can write, but not read. When you dispose
-the stream, the log is updated atomically with the new data. Only a
-single writer can call Append() at any given time, and this exclusion
-works across processes too.
+a bounded stream to which you can write. When you dispose the stream,
+the log is updated atomically with the new data. Only a single writer
+can call Append() at any given time, and this exclusion works across
+processes too.
 
-Writing to the stream can utilize any serialization API that uses the
-standard .NET System.IO.Stream abstractions.
+You can utilize any serialization API that uses the standard .NET
+System.IO.Stream abstractions to write to the output stream, so the
+actual content of the event log is entirely domain-specific. You
+could use JSON, XML, BinaryFormatter, or some mix of all of the above
+if you really wanted to.
 
 Each TransactionId is a marker for the beginning of an `Append()`
 event, which can be later used to replay the log's events.
-`TransactionId.First` defines the universal first transaction.
+`TransactionId.First` defines the log's first transaction.
 
 The replay API provides a simple and efficient interface for reading
 log contents from a given marker. This is often used for log
@@ -73,17 +76,17 @@ event sourcing.
 
 # Status
 
-I believe the API to be complete and sufficient, and I also believe
-the current implement to be correct, but this hasn't yet been tested.
-
-The file format is still in flux until an official release.
+I believe the API to be complete and sufficient, but more testing is
+needed. The file format is still in flux until an official release.
 
 # Future Work
 
 I considered a memory-mapped implementation, but locking semantics
 across processes weren't clear, and the benchmarks I'd seen didn't
-convey much benefit to memory mapped files for this purpose. Streams
-are also quite ubiquitous, particularly for de/serialization.
+convey much benefit to memory mapped files for this purpose.
+
+Streams are also quite ubiquitous, particularly for de/serialization
+APIs, so this approach was just a natural fit.
 
 # LICENSE
 
