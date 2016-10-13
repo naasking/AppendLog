@@ -5,6 +5,7 @@ using System.Collections.Generic;
 using System.Linq;
 using System.Text;
 using System.Diagnostics;
+using System.Runtime.InteropServices;
 
 namespace AppendLog
 {
@@ -91,22 +92,16 @@ namespace AppendLog
     public interface IAppendLog : IDisposable
     {
         /// <summary>
-        /// The first transaction.
+        /// The first transaction in the log.
         /// </summary>
         TransactionId First { get;  }
 
         /// <summary>
-        /// Enumerate the sequence of transactions since <paramref name="lastEvent"/>.
+        /// Enumerate the sequence of transactions since <paramref name="last"/>.
         /// </summary>
-        /// <param name="lastEvent">The last event seen.</param>
+        /// <param name="last">The last event seen.</param>
         /// <returns>A sequence of transactions since the given event.</returns>
-        /// <remarks>
-        /// The format of the output data is simply a sequence of records:
-        /// +-------------+---------------+---------------+
-        /// | 64-bit TxId | 32-bit length | length * byte |
-        /// +-------------+---------------+---------------+
-        /// </remarks>
-        IEventEnumerator Replay(TransactionId lastEvent);
+        IEventEnumerator Replay(TransactionId last);
         
         /// <summary>
         /// Atomically append data to the durable store.
@@ -114,39 +109,18 @@ namespace AppendLog
         /// <param name="async">True if the stream should support efficient asynchronous operations, false otherwise.</param>
         /// <param name="transaction">The transaction being written.</param>
         /// <returns>A stream for writing.</returns>
+        /// <remarks>
+        /// The <paramref name="async"/> parameter is largely optional, in that it's safe to simply
+        /// provide 'false' and everything will still work.
+        /// </remarks>
         Stream Append(bool async, out TransactionId transaction);
     }
-
+    
     /// <summary>
     /// Extensions on <see cref="IAppendLog"/>.
     /// </summary>
     public static class AppendLogs
-    {
-        /// <summary>
-        /// Replay a log to an output stream.
-        /// </summary>
-        /// <param name="log"></param>
-        /// <param name="lastEvent"></param>
-        /// <param name="output"></param>
-        /// <returns></returns>
-        public static async Task<TransactionId> ReplayTo(this IAppendLog log, TransactionId lastEvent, Stream output)
-        {
-            using (var ie = log.Replay(lastEvent))
-            {
-                var buf = new byte[sizeof(long)];
-                while (await ie.MoveNext())
-                {
-                    ie.Transaction.Id.WriteId(buf);
-                    await output.WriteAsync(buf, 0, buf.Length);
-                    ie.Stream.Length.WriteId(buf);
-                    await output.WriteAsync(buf, 0, buf.Length);
-                    await ie.Stream.CopyToAsync(output);
-                    lastEvent = ie.Transaction;
-                }
-            }
-            return lastEvent;
-        }
-
+    {   
         /// <summary>
         /// Replay a log to an output stream.
         /// </summary>
@@ -206,23 +180,64 @@ namespace AppendLog
             return log.Append(async, out ignore);
         }
 
-        internal static long FillNextId(this byte[] x)
+        #region Internal marshalling to/from byte arrays in big endian format
+        internal static long GetNextId(this byte[] x)
         {
-            return x[0] | x[1] << 8 | x[2] << 16 | x[3] << 24
-                 | x[4] << 32 | x[5] << 40 | x[6] << 48 | x[7] << 56;
+            return BitConverter.IsLittleEndian
+                 ? x[0] | x[1] <<  8 | x[2] << 16 | x[3] << 24 | x[4] << 32 | x[5] << 40 | x[6] << 48 | x[7] << 56
+                 : x[7] | x[6] <<  8 | x[5] << 16 | x[4] << 24 | x[3] << 32 | x[2] << 40 | x[1] << 48 | x[0] << 56;
+        }
+        
+        internal static int GetLength(this byte[] x)
+        {
+            return BitConverter.IsLittleEndian
+                 ? x[3] | x[2] << 8 | x[1] << 16 | x[0] << 24
+                 : x[0] | x[1] << 8 | x[2] << 16 | x[3] << 24;
         }
 
-        internal static TransactionId WriteId(this long id, byte[] x)
+        internal static void WriteLength(this int len, byte[] x)
         {
-            x[0] = (byte)(id & 0xFFFF);
-            x[1] = (byte)((id >> 8) & 0xFFFF);
-            x[2] = (byte)((id >> 16) & 0xFFFF);
-            x[3] = (byte)((id >> 24) & 0xFFFF);
-            x[4] = (byte)((id >> 32) & 0xFFFF);
-            x[5] = (byte)((id >> 40) & 0xFFFF);
-            x[6] = (byte)((id >> 48) & 0xFFFF);
-            x[7] = (byte)((id >> 56) & 0xFFFF);
-            return new TransactionId { Id = id };
+            if (BitConverter.IsLittleEndian)
+            {
+                x[3] = (byte)(len         & 0xFFFF);
+                x[2] = (byte)((len >>  8) & 0xFFFF);
+                x[1] = (byte)((len >> 16) & 0xFFFF);
+                x[0] = (byte)((len >> 24) & 0xFFFF);
+            }
+            else
+            {
+                x[0] = (byte)(len         & 0xFFFF);
+                x[1] = (byte)((len >>  8) & 0xFFFF);
+                x[2] = (byte)((len >> 16) & 0xFFFF);
+                x[3] = (byte)((len >> 24) & 0xFFFF);
+            }
         }
+
+        internal static void WriteId(this long id, byte[] x)
+        {
+            if (BitConverter.IsLittleEndian)
+            {
+                x[7] = (byte)(id         & 0xFFFF);
+                x[6] = (byte)((id >>  8) & 0xFFFF);
+                x[5] = (byte)((id >> 16) & 0xFFFF);
+                x[4] = (byte)((id >> 24) & 0xFFFF);
+                x[3] = (byte)((id >> 32) & 0xFFFF);
+                x[2] = (byte)((id >> 40) & 0xFFFF);
+                x[1] = (byte)((id >> 48) & 0xFFFF);
+                x[0] = (byte)((id >> 56) & 0xFFFF);
+            }
+            else
+            {
+                x[0] = (byte)(id         & 0xFFFF);
+                x[1] = (byte)((id >>  8) & 0xFFFF);
+                x[2] = (byte)((id >> 16) & 0xFFFF);
+                x[3] = (byte)((id >> 24) & 0xFFFF);
+                x[4] = (byte)((id >> 32) & 0xFFFF);
+                x[5] = (byte)((id >> 40) & 0xFFFF);
+                x[6] = (byte)((id >> 48) & 0xFFFF);
+                x[7] = (byte)((id >> 56) & 0xFFFF);
+            }
+        }
+        #endregion
     }
 }

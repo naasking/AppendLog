@@ -6,6 +6,7 @@ using System.Collections.Generic;
 using System.Linq;
 using System.Text;
 using System.IO;
+using System.Diagnostics;
 
 namespace AppendLog
 {
@@ -22,7 +23,14 @@ namespace AppendLog
         //logic to also open the new file when it's done with the read file. The latter is preferable.
         string path;
 
+        // current log file version number
         const long VERSION = 0x01;
+        // The size of an entry header.
+        const int EHDR_SIZE = sizeof(int);
+        // The size of the log file header which consists of Int64 version # followed by the last committed transaction id.
+        const long LHDR_SIZE = sizeof(long) + sizeof(long);
+        // The size of the log file header which consists of Int64 version # followed by the last committed transaction id.
+        const int TXID_POS = sizeof(long);
 
         public FileLog(string path)
         {
@@ -31,16 +39,19 @@ namespace AppendLog
             // check the file's version number if file exists, else write it out
             using (var fs = File.Open(path, FileMode.OpenOrCreate, FileAccess.ReadWrite, FileShare.None))
             {
-                var buf = new byte[sizeof(ulong)];
-                if (fs.Length == 0)
+                var buf = new byte[LHDR_SIZE];
+                if (fs.Length <= LHDR_SIZE)
                 {
                     VERSION.WriteId(buf);
-                    fs.Write(buf, 0, buf.Length);
+                    fs.Write(buf, 0, TXID_POS);
+                    LHDR_SIZE.WriteId(buf);
+                    fs.Write(buf, 0, TXID_POS);
+                    fs.Flush(true);
                 }
                 else
                 {
                     fs.Read(buf, 0, buf.Length);
-                    var vers = buf.FillNextId();
+                    var vers = buf.GetNextId();
                     if (vers != VERSION)
                     {
                         throw new NotSupportedException(string.Format("File log expects version {0}.{1}.{2} but found version {3}.{4}.{5}",
@@ -50,16 +61,34 @@ namespace AppendLog
             }
         }
 
+        /// <summary>
+        /// The first transaction in the log.
+        /// </summary>
         public TransactionId First
         {
-            get { return new TransactionId { Id = sizeof(ulong) }; }
+            get { return new TransactionId { Id = LHDR_SIZE }; }
         }
 
-        public IEventEnumerator Replay(TransactionId lastEvent)
+        /// <summary>
+        /// Enumerate the sequence of transactions since <paramref name="last"/>.
+        /// </summary>
+        /// <param name="last">The last event seen.</param>
+        /// <returns>A sequence of transactions since the given event.</returns>
+        public IEventEnumerator Replay(TransactionId last)
         {
-            return new EventEnumerator(this, lastEvent);
+            return new EventEnumerator(this, last);
         }
 
+        /// <summary>
+        /// Atomically append data to the durable store.
+        /// </summary>
+        /// <param name="async">True if the stream should support efficient asynchronous operations, false otherwise.</param>
+        /// <param name="transaction">The transaction being written.</param>
+        /// <returns>A stream for writing.</returns>
+        /// <remarks>
+        /// The <paramref name="async"/> parameter is largely optional, in that it's safe to simply
+        /// provide 'false' and everything will still work.
+        /// </remarks>
         public Stream Append(bool async, out TransactionId transaction)
         {
             return new TransactedStream(this, async, out transaction);
@@ -67,7 +96,8 @@ namespace AppendLog
 
         public void Dispose()
         {
-            // should track outstanding write stream and dispose of it?
+            // we could track outstanding write stream and dispose of it, but there's nothing
+            // dangerous or incorrect about letting writers finish in their own time
         }
 
         #region Internals
@@ -79,7 +109,9 @@ namespace AppendLog
         {
             FileLog log;
             FileStream file;
-            TransactionId next;
+            byte[] buf;
+            long end;
+            int length;
             public TransactionId Transaction { get; internal set; }
             public Stream Stream { get; internal set; }
 
@@ -88,30 +120,34 @@ namespace AppendLog
                 Dispose();
             }
 
-            public EventEnumerator(FileLog slog, TransactionId lastEvent)
+            public EventEnumerator(FileLog slog, TransactionId last)
             {
-                file = log.Open();
+                file = new FileStream(slog.path, FileMode.OpenOrCreate, FileAccess.Read, FileShare.ReadWrite);
                 log = slog;
-                // skip version header if default TransactionId
-                next = lastEvent.Id == 0 ? log.First : lastEvent;
-                file.Position = next.Id;
+                buf = new byte[TXID_POS];
+                Transaction = last.Id == 0 ? log.First : last;
+                file.Position = TXID_POS;
             }
 
             public async Task<bool> MoveNext()
             {
                 if (file == null) throw new ObjectDisposedException("IEventEnumerator");
-                var tmp = new byte[sizeof(long)];
-                await file.ReadAsync(tmp, 0, sizeof(long));
-                var end = tmp.FillNextId();
-                if (next.Id >= end)
-                    return false;
-                //FIXME: I'm assuming that reading/writing an array buffer at a time is atomic across threads and processes.
+                if (Stream == null)
+                {
+                    // on first run, load the last transaction which terminates the enumeration
+                    await file.ReadAsync(buf, 0, TXID_POS);
+                    end = buf.GetNextId();
+                    file.Position = Transaction.Id;
+                }
+                //NOTE: I'm assuming that reading/writing a small array at a time is atomic across threads and processes.
                 //I open the write stream appropriately for atomic writes, but should test this extensively.
-                await file.ReadAsync(tmp, 0, sizeof(int));
-                var length = tmp[0] | tmp[1] << 8 | tmp[2] << 16 | tmp[3] << 24;
+                Debug.Assert(file.Position <= end);  // if pos > end, then read/seek logic is messed up
+                if (file.Position == end)
+                    return false;
+                Transaction = new TransactionId { Id = file.Position };
+                await file.ReadAsync(buf, 0, EHDR_SIZE);
+                length = buf.GetLength();
                 Stream = new BoundedStream(log, file.Position, length);
-                Transaction = next;
-                next = new TransactionId { Id = Transaction.Id + length };
                 return true;
             }
 
@@ -122,18 +158,6 @@ namespace AppendLog
             }
         }
         
-        FileStream Open()
-        {
-            return new FileStream(path, FileMode.OpenOrCreate, FileAccess.Read, FileShare.ReadWrite);
-        }
-
-        static long ReadNextId(Stream file, byte[] x)
-        {
-            // read the 64-bit value designating the stream length
-            file.Read(x, 0, sizeof(long));
-            return x.FillNextId();
-        }
-        
         /// <summary>
         /// A file stream that updates the transaction identifiers embedded in file upon close.
         /// </summary>
@@ -141,29 +165,38 @@ namespace AppendLog
         /// This class ensures that only a single writer accesses the file at any one time. Since
         /// it's append-only, we allow multiple readers to access the file; they are bounded above
         /// by the file's internal transaction identifier.
+        /// 
+        /// The format of the log data is simply a sequence of records:
+        /// +---------------+---------------+
+        /// | 32-bit length | length * byte |
+        /// +---------------+---------------+
         /// </remarks>
         sealed class TransactedStream : FileStream
         {
-            long nextId;
+            long start;
             byte[] buf;
 
+            // open the file with exclusive write access and using a 4KB buffer
             public TransactedStream(FileLog log, bool async, out TransactionId txid)
-                : base(log.path, FileMode.Append, FileAccess.ReadWrite, FileShare.Read, 4096, async)
+                : base(log.path, FileMode.Open, FileAccess.ReadWrite, FileShare.Read, 4096, async)
             {
-                // open the file with exclusive write access and in async mode
-                this.buf = new byte[sizeof(long)];
-                this.nextId = ReadNextId(this, buf);
-                txid = new TransactionId { Id = nextId };
-                base.Position = nextId + sizeof(int); // seek past the length header
+                this.buf = new byte[TXID_POS];
+                // read the log header to initialize the stream
+                base.Position = TXID_POS;
+                Read(buf, 0, TXID_POS);
+                var next = buf.GetNextId();
+                Position = next;
+                txid = new TransactionId { Id = next };
+                // seek past the entry header to start writing
+                base.Position = this.start = next + EHDR_SIZE;
             }
 
             public override long Seek(long offset, SeekOrigin origin)
             {
-                //FIXME: not sure if I really need this since I open the file in AppendData/Append mode w/ sequential scan
-                var newpos = origin == SeekOrigin.Begin   ? nextId + offset:
+                var newpos = origin == SeekOrigin.Begin   ? start + offset:
                              origin == SeekOrigin.Current ? Position + offset:
                                                             Length + offset;
-                if (newpos <= nextId + sizeof(int)) throw new ArgumentException("Cannot seek before the end of the log.", "offset");
+                if (newpos <= start) throw new ArgumentException("Cannot seek before the end of the log.", "offset");
                 return base.Seek(offset, origin);
             }
 
@@ -172,8 +205,7 @@ namespace AppendLog
                 get { return base.Position; }
                 set
                 {
-                    //FIXME: not sure if I really need this since I open the file in AppendData/Append mode
-                    if (value <= nextId + sizeof(int)) throw new ArgumentOutOfRangeException("value", "Cannot seek before the end of the log.");
+                    if (value <= start) throw new ArgumentOutOfRangeException("value", "Cannot seek before the end of the log.");
                     base.Position = value;
                 }
             }
@@ -186,22 +218,17 @@ namespace AppendLog
                 //header is then just pointing at garbage. So call flush to sync data to disk, then write header.
                 Flush(true);
 
-                // write out the 32-bit block length
-                var length = (int)(Position - nextId);
-                buf[0] = (byte)(length         & 0xFFFF);
-                buf[1] = (byte)((length >> 8)  & 0xFFFF);
-                buf[2] = (byte)((length >> 16) & 0xFFFF);
-                buf[3] = (byte)((length >> 24) & 0xFFFF);
-                base.Position = nextId;
-                Write(buf, 0, sizeof(int));
+                // write out the 32-bit length block
+                var length = (int)(Position - start);
+                length.WriteLength(buf);
+                base.Position = start - EHDR_SIZE;
+                Write(buf, 0, EHDR_SIZE);
 
-                // write out the new 64-bit txid
-                // position is not at the beginning of the file, so we shouldn't suffer from CLR bug fixed in .net 4.5:
-                // https://connect.microsoft.com/VisualStudio/feedback/details/792434/flush-true-does-not-always-flush-when-it-should
-                var txid = nextId + length;
+                // write out the new 64-bit txid in the log header, just after the version number
+                var txid = start + length;
                 txid.WriteId(buf);
-                base.Position = sizeof(long); // skip version #
-                Write(buf, 0, sizeof(long));
+                base.Position = TXID_POS; // write txid after version #
+                Write(buf, 0, TXID_POS);
                 
                 // wait until all data is written to disk
                 Flush(true);
