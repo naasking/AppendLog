@@ -249,7 +249,7 @@ namespace AppendLog
             {
                 this.start = start;
                 this.end = start + length;
-                base.Position = start;
+                base.Seek(start, SeekOrigin.Begin);
             }
 
             public override long Seek(long offset, SeekOrigin origin)
@@ -257,7 +257,7 @@ namespace AppendLog
                 var newpos = origin == SeekOrigin.Begin   ? start + offset:
                              origin == SeekOrigin.Current ? Position + offset:
                                                             Length + offset;
-                if (newpos < start) throw new ArgumentException("Cannot seek before the end of the log.", "offset");
+                if (newpos < start) throw new ArgumentException("Cannot seek before the beginning of the log.", "offset");
                 if (newpos >= end) throw new ArgumentException("Cannot seek past the end of the log.", "offset");
                 return base.Seek(offset, origin);
             }
