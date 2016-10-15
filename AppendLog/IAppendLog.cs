@@ -10,61 +10,6 @@ using System.Runtime.InteropServices;
 namespace AppendLog
 {
     /// <summary>
-    /// A transaction identifier.
-    /// </summary>
-    public struct TransactionId : IEquatable<TransactionId>
-    {
-        long id;
-
-        /// <summary>
-        /// The integral representation of a transaction identifier.
-        /// </summary>
-        internal long Id
-        {
-            get { return Math.Max(id, sizeof(long)); }
-            set { id = value; }
-        }
-
-        /// <summary>
-        /// The first transaction id possible.
-        /// </summary>
-        public static TransactionId First
-        {
-            get { return new TransactionId { id = sizeof(long) }; }
-        }
-
-        public bool Equals(TransactionId other)
-        {
-            return Id == other.Id;
-        }
-
-        public override bool Equals(object obj)
-        {
-            return obj is TransactionId && Equals((TransactionId)obj);
-        }
-
-        public override int GetHashCode()
-        {
-            return typeof(TransactionId).GetHashCode() ^ Id.GetHashCode();
-        }
-
-        public override string ToString()
-        {
-            return id.ToString("X");
-        }
-
-        public static bool operator ==(TransactionId left, TransactionId right)
-        {
-            return left.Id == right.Id;
-        }
-
-        public static bool operator !=(TransactionId left, TransactionId right)
-        {
-            return left.Id != right.Id;
-        }
-    }
-
-    /// <summary>
     /// An event enumerator.
     /// </summary>
     public interface IEventEnumerator : IDisposable
@@ -94,7 +39,7 @@ namespace AppendLog
         /// <summary>
         /// The first transaction in the log.
         /// </summary>
-        TransactionId First { get;  }
+        TransactionId First { get; }
 
         /// <summary>
         /// Enumerate the sequence of transactions since <paramref name="last"/>.
@@ -108,10 +53,10 @@ namespace AppendLog
         /// </summary>
         /// <param name="async">True if the stream should support efficient asynchronous operations, false otherwise.</param>
         /// <param name="transaction">The transaction being written.</param>
-        /// <returns>A stream for writing.</returns>
+        /// <returns>A stream for appending to the log.</returns>
         /// <remarks>
         /// The <paramref name="async"/> parameter is largely optional, in that it's safe to simply
-        /// provide 'false' and everything will still work.
+        /// provide 'false' and everything should still work.
         /// </remarks>
         Stream Append(bool async, out TransactionId transaction);
     }
