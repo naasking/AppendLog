@@ -184,8 +184,8 @@ namespace AppendLog
         internal static long GetNextId(this byte[] x)
         {
             return BitConverter.IsLittleEndian
-                 ? x[0] | x[1] <<  8 | x[2] << 16 | x[3] << 24 | x[4] << 32 | x[5] << 40 | x[6] << 48 | x[7] << 56
-                 : x[7] | x[6] <<  8 | x[5] << 16 | x[4] << 24 | x[3] << 32 | x[2] << 40 | x[1] << 48 | x[0] << 56;
+                 ? x[7] | x[6] << 8 | x[5] << 16 | x[4] << 24 | x[3] << 32 | x[2] << 40 | x[1] << 48 | x[0] << 56
+                 : x[0] | x[1] << 8 | x[2] << 16 | x[3] << 24 | x[4] << 32 | x[5] << 40 | x[6] << 48 | x[7] << 56;
         }
         
         internal static int GetLength(this byte[] x)
