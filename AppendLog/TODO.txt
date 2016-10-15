@@ -1,0 +1,5 @@
+﻿= TODO =
+
+ * add IAppendLog implementation for SQL backend
+ * add remote IAppendLog implementation
+ * add replicated IAppendLog implementation using Raft

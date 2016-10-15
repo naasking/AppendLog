@@ -1,7 +1,11 @@
 ﻿
-Microsoft Visual Studio Solution File, Format Version 11.00
-# Visual Studio 2010
+Microsoft Visual Studio Solution File, Format Version 12.00
+# Visual Studio 14
+VisualStudioVersion = 14.0.25420.1
+MinimumVisualStudioVersion = 10.0.40219.1
 Project("{FAE04EC0-301F-11D3-BF4B-00C04F79EFBC}") = "AppendLog", "AppendLog\AppendLog.csproj", "{5569C5FC-7143-4500-80BD-20F8DEA3B721}"
+EndProject
+Project("{FAE04EC0-301F-11D3-BF4B-00C04F79EFBC}") = "Tests", "Tests\Tests.csproj", "{31D2F260-68E8-4328-8EE6-BC6222869655}"
 EndProject
 Global
 	GlobalSection(SolutionConfigurationPlatforms) = preSolution
@@ -13,6 +17,10 @@ Global
 		{5569C5FC-7143-4500-80BD-20F8DEA3B721}.Debug|Any CPU.Build.0 = Debug|Any CPU
 		{5569C5FC-7143-4500-80BD-20F8DEA3B721}.Release|Any CPU.ActiveCfg = Release|Any CPU
 		{5569C5FC-7143-4500-80BD-20F8DEA3B721}.Release|Any CPU.Build.0 = Release|Any CPU
+		{31D2F260-68E8-4328-8EE6-BC6222869655}.Debug|Any CPU.ActiveCfg = Debug|Any CPU
+		{31D2F260-68E8-4328-8EE6-BC6222869655}.Debug|Any CPU.Build.0 = Debug|Any CPU
+		{31D2F260-68E8-4328-8EE6-BC6222869655}.Release|Any CPU.ActiveCfg = Release|Any CPU
+		{31D2F260-68E8-4328-8EE6-BC6222869655}.Release|Any CPU.Build.0 = Release|Any CPU
 	EndGlobalSection
 	GlobalSection(SolutionProperties) = preSolution
 		HideSolutionNode = FALSE
