@@ -40,7 +40,7 @@ namespace AppendLog
             using (var fs = File.Open(path, FileMode.OpenOrCreate, FileAccess.ReadWrite, FileShare.None))
             {
                 var buf = new byte[LHDR_SIZE];
-                if (fs.Length <= LHDR_SIZE)
+                if (fs.Length < LHDR_SIZE)
                 {
                     VERSION.WriteId(buf);
                     fs.Write(buf, 0, TXID_POS);
