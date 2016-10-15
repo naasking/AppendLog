@@ -17,7 +17,7 @@ namespace Tests
 
         static void BasicTest()
         {
-            var fl = new FileLog("test.db");
+            var fl = FileLog.Create("test.db").Result;
             try
             {
                 using (var buf = fl.Append(false))

@@ -24,18 +24,28 @@ namespace AppendLog
         string path;
 
         // current log file version number
-        const long VERSION = 0x01;
+        internal const long VERSION = 0x01;
         // The size of an entry header.
-        const int EHDR_SIZE = sizeof(int);
+        internal const int EHDR_SIZE = sizeof(int);
         // The size of the log file header which consists of Int64 version # followed by the last committed transaction id.
-        const long LHDR_SIZE = sizeof(long) + sizeof(long);
+        internal const long LHDR_SIZE = sizeof(long) + sizeof(long);
         // The size of the log file header which consists of Int64 version # followed by the last committed transaction id.
-        const int TXID_POS = sizeof(long);
+        internal const int TXID_POS = sizeof(long);
 
-        public FileLog(string path)
+        FileLog(string path)
+        {
+            this.path = Path.GetFullPath(path);
+        }
+
+        /// <summary>
+        /// An async FileLog constructor.
+        /// </summary>
+        /// <param name="path">The path to the log file.</param>
+        /// <returns>An <see cref="FileLog"/> instance.</returns>
+        public static async Task<FileLog> Create(string path)
         {
             if (path == null) throw new ArgumentNullException("path");
-            this.path = Path.GetFullPath(path);
+            path = Path.GetFullPath(path);
             // check the file's version number if file exists, else write it out
             using (var fs = File.Open(path, FileMode.OpenOrCreate, FileAccess.ReadWrite, FileShare.None))
             {
@@ -43,14 +53,14 @@ namespace AppendLog
                 if (fs.Length < LHDR_SIZE)
                 {
                     VERSION.WriteId(buf);
-                    fs.Write(buf, 0, TXID_POS);
+                    await fs.WriteAsync(buf, 0, TXID_POS);
                     LHDR_SIZE.WriteId(buf);
-                    fs.Write(buf, 0, TXID_POS);
-                    fs.Flush(true);
+                    await fs.WriteAsync(buf, 0, TXID_POS);
+                    await fs.FlushAsync();
                 }
                 else
                 {
-                    fs.Read(buf, 0, buf.Length);
+                    await fs.ReadAsync(buf, 0, buf.Length);
                     var vers = buf.GetNextId();
                     if (vers != VERSION)
                     {
@@ -59,6 +69,7 @@ namespace AppendLog
                     }
                 }
             }
+            return new FileLog(path);
         }
 
         /// <summary>
@@ -232,6 +243,7 @@ namespace AppendLog
                 Write(buf, 0, TXID_POS);
                 
                 // wait until all data is written to disk
+                //FIXME: not sure this is needed, but the source indicates that Flush(true) isn't called in base.Close
                 Flush(true);
                 base.Close();
             }
