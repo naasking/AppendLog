@@ -137,7 +137,7 @@ namespace AppendLog
                     // on first run, load the last transaction which terminates the enumeration
                     await file.ReadAsync(buf, 0, TXID_POS);
                     end = buf.GetNextId();
-                    file.Position = Transaction.Id;
+                    file.Seek(Transaction.Id, SeekOrigin.Begin);
                 }
                 //NOTE: I'm assuming that reading/writing a small array at a time is atomic across threads and processes.
                 //I open the write stream appropriately for atomic writes, but should test this extensively.
@@ -148,6 +148,7 @@ namespace AppendLog
                 await file.ReadAsync(buf, 0, EHDR_SIZE);
                 length = buf.GetLength();
                 Stream = new BoundedStream(log, file.Position, length);
+                file.Seek(length, SeekOrigin.Current);
                 return true;
             }
 
@@ -221,13 +222,13 @@ namespace AppendLog
                 // write out the 32-bit length block
                 var length = (int)(Position - start);
                 length.WriteLength(buf);
-                base.Position = start - EHDR_SIZE;
+                base.Seek(start - EHDR_SIZE, SeekOrigin.Begin);
                 Write(buf, 0, EHDR_SIZE);
 
                 // write out the new 64-bit txid in the log header, just after the version number
                 var txid = start + length;
                 txid.WriteId(buf);
-                base.Position = TXID_POS; // write txid after version #
+                base.Seek(TXID_POS, SeekOrigin.Begin); // write txid after version #
                 Write(buf, 0, TXID_POS);
                 
                 // wait until all data is written to disk
