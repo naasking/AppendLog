@@ -23,7 +23,7 @@ Sed cursus neque in semper maximus. Integer condimentum erat vel porttitor maxim
         {
             BasicTest();
             MultiThreadTest();
-            SingleTest();
+            //SingleTest();
         }
 
         const int ITER = 1000;

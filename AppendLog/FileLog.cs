@@ -27,7 +27,7 @@ namespace AppendLog
         long next;
         byte[] buf;
 
-        //FIXME: creating FileStreams is expensive, so perhaps have a BoundedStream pool?
+        //FIXME: creating FileStreams is expensive, so perhaps have a BoundedStream pool for readers?
 
         // current log file version number
         internal const long VERSION = 0x01;
@@ -156,8 +156,6 @@ namespace AppendLog
                     end = buf.GetNextId();
                     file.Seek(Transaction.Id, SeekOrigin.Begin);
                 }
-                //NOTE: I'm assuming that reading/writing a small array at a time is atomic across threads and processes.
-                //I open the write stream appropriately for atomic writes, but should test this extensively.
                 Debug.Assert(file.Position <= end);  // if pos > end, then read/seek logic is messed up
                 if (file.Position == end)
                     return false;
@@ -232,28 +230,35 @@ namespace AppendLog
 
             public override void Close()
             {
-                //NOTE FS Atomicity: http://danluu.com/file-consistency/
-                //Moral: the OS can reorder writes such that the write at 0 could happen first, even if the write
-                //is called 2nd. If a crash/power loss happens btw the write at 0 and the writes to the end, the
-                //header is then just pointing at garbage. So call flush to sync data to disk, then write header.
-                underlying.Flush(); // or Flush(true)?
-
-                // write out the 32-bit length block
                 var length = (int)(Position - start);
-                length.WriteLength(buf);
-                underlying.Seek(start - EHDR_SIZE, SeekOrigin.Begin);
-                Write(buf, 0, EHDR_SIZE);
+                if (length > 0)
+                {
+                    // write out the 32-bit length block
+                    length.WriteLength(buf);
+                    underlying.Seek(start - EHDR_SIZE, SeekOrigin.Begin);
+                    underlying.Write(buf, 0, EHDR_SIZE);
 
-                // write out the new 64-bit txid in the log header, just after the version number
-                var txid = start + length;
-                txid.WriteId(buf);
-                underlying.Seek(TXID_POS, SeekOrigin.Begin); // write txid after version #
-                underlying.Write(buf, 0, TXID_POS);
-                underlying.Flush();
-                base.Close();
+                    //NOTE FS Atomicity: http://danluu.com/file-consistency/
+                    //Moral: the OS can reorder writes such that the write at 0 could happen first, even if the write
+                    //is called 2nd. If a crash/power loss happens btw the write at 0 and the writes to the end, the
+                    //header is then just pointing at garbage. So call flush to sync data to disk, then write header.
+                    underlying.Flush(); // or Flush(true)?
 
-                // update the cached 'next' txid, then release the lock on the underlying stream
-                Interlocked.Exchange(ref log.next, txid);
+                    // the block is now successfully persisted, so write out the new txid in the log header
+                    var txid = start + length;
+                    txid.WriteId(buf);
+                    underlying.Seek(TXID_POS, SeekOrigin.Begin); // write txid after version #
+                    underlying.Write(buf, 0, TXID_POS);
+                    underlying.Flush();
+                    base.Close();
+
+                    // update the cached 'next' txid, then release the lock on the underlying stream
+                    Interlocked.Exchange(ref log.next, txid);
+                }
+                else
+                {
+                    base.Close();
+                }
                 Monitor.Exit(underlying);
             }
 
