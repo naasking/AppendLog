@@ -105,8 +105,8 @@ namespace AppendLog
         /// </remarks>
         public Stream Append(out TransactionId tx)
         {
-            tx = default(TransactionId);
             Monitor.Enter(writer);
+            tx = new TransactionId { Id = next };
             return new AtomicAppender(this, writer, next, buf);
         }
 
