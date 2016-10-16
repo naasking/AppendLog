@@ -214,7 +214,7 @@ namespace AppendLog
 
             public override long Position
             {
-                get { return underlying.Position; }
+                get { return underlying.Position - start; }
                 set { Seek(value, SeekOrigin.Begin); }
             }
 
@@ -230,7 +230,7 @@ namespace AppendLog
 
             public override void Close()
             {
-                var length = (int)(Position - start);
+                var length = (int)(underlying.Position - start);
                 if (length > 0)
                 {
                     // write out the 32-bit length block
