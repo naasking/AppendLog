@@ -21,7 +21,7 @@ writing to the log:
         /// Atomically append data to the durable store.
         /// </summary>
         /// <returns>A stream for writing.</returns>
-        Stream Append();
+        Stream Append(out TransactionId tx);
 
         /// <summary>
         /// Enumerate the sequence of transactions since <paramref name="lastEvent"/>.
