@@ -51,48 +51,47 @@ namespace AppendLog
         /// <summary>
         /// Atomically append data to the durable store.
         /// </summary>
-        /// <param name="async">True if the stream should support efficient asynchronous operations, false otherwise.</param>
         /// <param name="transaction">The transaction being written.</param>
         /// <returns>A stream for appending to the log.</returns>
         /// <remarks>
         /// The <paramref name="async"/> parameter is largely optional, in that it's safe to simply
         /// provide 'false' and everything should still work.
         /// </remarks>
-        Stream Append(bool async, out TransactionId transaction);
+        Stream Append(out TransactionId transaction);
     }
     
     /// <summary>
     /// Extensions on <see cref="IAppendLog"/>.
     /// </summary>
     public static class AppendLogs
-    {   
-        /// <summary>
-        /// Replay a log to an output stream.
-        /// </summary>
-        /// <param name="log"></param>
-        /// <param name="lastEvent"></param>
-        /// <param name="output"></param>
-        /// <returns></returns>
-        public static async Task<TransactionId> ReplayTo(this IAppendLog log, TransactionId lastEvent, IAppendLog target)
-        {
-            using (var ie = log.Replay(lastEvent))
-            {
-                var buf = new byte[sizeof(long)];
-                while (await ie.MoveNext())
-                {
-                    TransactionId ignore;
-                    using (var output = target.Append(true, out ignore))
-                    {
-                        lastEvent = ie.Transaction;
-                        Debug.Assert(ignore == lastEvent);
-                        lastEvent.Id.WriteId(buf);
-                        await output.WriteAsync(buf, 0, buf.Length);
-                        await ie.Stream.CopyToAsync(output);
-                    }
-                }
-            }
-            return lastEvent;
-        }
+    {
+        ///// <summary>
+        ///// Replay a log to an output stream.
+        ///// </summary>
+        ///// <param name="log"></param>
+        ///// <param name="lastEvent"></param>
+        ///// <param name="output"></param>
+        ///// <returns></returns>
+        //public static async Task<TransactionId> ReplayTo(this IAppendLog log, TransactionId lastEvent, IAppendLog target)
+        //{
+        //    using (var ie = log.Replay(lastEvent))
+        //    {
+        //        var buf = new byte[sizeof(long)];
+        //        while (await ie.MoveNext())
+        //        {
+        //            TransactionId tx;
+        //            using (var output = target.Append(out tx))
+        //            {
+        //                lastEvent = ie.Transaction;
+        //                Debug.Assert(tx == lastEvent);
+        //                lastEvent.Id.WriteId(buf);
+        //                await output.WriteAsync(buf, 0, buf.Length);
+        //                await ie.Stream.CopyToAsync(output);
+        //            }
+        //        }
+        //    }
+        //    return lastEvent;
+        //}
 
         /// <summary>
         /// Replay events using a callback.
@@ -113,31 +112,19 @@ namespace AppendLog
             }
         }
 
-        /// <summary>
-        /// Replay events using a callback.
-        /// </summary>
-        /// <param name="log"></param>
-        /// <param name="async"></param>
-        /// <returns></returns>
-        public static Stream Append(this IAppendLog log, bool async)
-        {
-            TransactionId ignore;
-            return log.Append(async, out ignore);
-        }
-
         #region Internal marshalling to/from byte arrays in big endian format
-        internal static long GetNextId(this byte[] x)
+        internal static long GetNextId(this byte[] x, int i = 0)
         {
             return BitConverter.IsLittleEndian
-                 ? x[7] | x[6] << 8 | x[5] << 16 | x[4] << 24 | x[3] << 32 | x[2] << 40 | x[1] << 48 | x[0] << 56
-                 : x[0] | x[1] << 8 | x[2] << 16 | x[3] << 24 | x[4] << 32 | x[5] << 40 | x[6] << 48 | x[7] << 56;
+                 ? x[7 + i] | x[6 + i] << 8 | x[5 + i] << 16 | x[4 + i] << 24 | x[3 + i] << 32 | x[2 + i] << 40 | x[1 + i] << 48 | x[0 + i] << 56
+                 : x[0 + i] | x[1 + i] << 8 | x[2 + i] << 16 | x[3 + i] << 24 | x[4 + i] << 32 | x[5 + i] << 40 | x[6 + i] << 48 | x[7 + i] << 56;
         }
         
-        internal static int GetLength(this byte[] x)
+        internal static int GetLength(this byte[] x, int i = 0)
         {
             return BitConverter.IsLittleEndian
-                 ? x[3] | x[2] << 8 | x[1] << 16 | x[0] << 24
-                 : x[0] | x[1] << 8 | x[2] << 16 | x[3] << 24;
+                 ? x[3 + i] | x[2 + i] << 8 | x[1 + i] << 16 | x[0 + i] << 24
+                 : x[0 + i] | x[1 + i] << 8 | x[2 + i] << 16 | x[3 + i] << 24;
         }
 
         internal static void WriteLength(this int len, byte[] x)
