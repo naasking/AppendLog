@@ -29,6 +29,15 @@ namespace AppendLog
 
         //FIXME: creating FileStreams is expensive, so perhaps have a BoundedStream pool for readers?
 
+        //FIXME: currently seek around too much which causes an order of magnitude slowdown. Change log
+        //format to literal append-only with fixed-size segments, so given any file length we can compute
+        //the last flushed segment and check for garbage. Segments are of two types, internal | complete.
+        //Complete segments correspond to a full transaction, and consist of a sequence of internal
+        //segments. Last flused segment may be internal or complete. If complete, that's the last
+        //committed transaction. If internal, we step back until we hit the first complete segment,
+        //truncate the log file to that point. We need some sort of magic number for each segment
+        //header to verify whether the segment is garbage.
+
         // current log file version number
         internal const long VERSION = 0x01;
         // The size of an entry header.

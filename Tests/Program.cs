@@ -23,7 +23,7 @@ Sed cursus neque in semper maximus. Integer condimentum erat vel porttitor maxim
         {
             BasicTest();
             MultiThreadTest();
-            //SingleTest();
+            SingleTest();
         }
 
         const int ITER = 1000;
@@ -33,16 +33,37 @@ Sed cursus neque in semper maximus. Integer condimentum erat vel porttitor maxim
         {
             var clock = new Stopwatch();
             var path = Path.GetFullPath("test.db");
-            clock.Start();
-            var buf = Encoding.ASCII.GetBytes(TXT);
-            for (int i = 0; i < 3 * ITER; ++i)
+            try
             {
+                clock.Start();
+                var buf = Encoding.ASCII.GetBytes(TXT);
+                var id = new byte[sizeof(long)];
                 using (var file = File.OpenWrite(path))
                 {
-                    file.Write(buf, 0, buf.Length);
+                    file.Position += sizeof(long);
+                    for (int i = 0; i < 3 * ITER; ++i)
+                    {
+                        // advance past length header, then write out data
+                        //var lhdr = file.Position - sizeof(long);
+                        file.Write(buf, 0, buf.Length);
+                        // seek back to length header and write it out
+                        //file.Position = pos;
+                        file.Write(id, 0, id.Length);
+                        //var end = file.Position;
+                        //file.Flush();
+                        // seek back to log header and write out pointer
+                        //file.Seek(0, SeekOrigin.Begin);
+                        file.Write(id, 0, id.Length);
+                        file.Flush();
+                        //file.Seek(end + sizeof(long), SeekOrigin.Begin);
+                    }
                 }
+                clock.Stop();
             }
-            clock.Stop();
+            finally
+            {
+                File.Delete(path);
+            }
             var secs = clock.ElapsedMilliseconds / 1000.0;
             Console.WriteLine("Single: {0:0} tx/sec", 3 * ITER / secs);
         }
@@ -54,11 +75,13 @@ Sed cursus neque in semper maximus. Integer condimentum erat vel porttitor maxim
             try
             {
                 clock.Start();
-                var t0 = Task.Run(new Action(Run));
-                var t1 = Task.Run(new Action(Run));
+                //var t0 = Task.Run(new Action(Run));
+                //var t1 = Task.Run(new Action(Run));
                 Run();
-                t0.Wait();
-                t1.Wait();
+                Run();
+                Run();
+                //t0.Wait();
+                //t1.Wait();
                 clock.Stop();
                 var count = 0;
                 using (var ie = log.Replay(log.First))
@@ -86,11 +109,12 @@ Sed cursus neque in semper maximus. Integer condimentum erat vel porttitor maxim
         static void Run()
         {
             var tx = log.First;
+            var buf = Encoding.ASCII.GetBytes(TXT);
             for (int i = 0; i < ITER; ++i)
             {
-                using (var buf = new StreamWriter(log.Append(out tx), Encoding.ASCII))
+                using (var x = log.Append(out tx))
                 {
-                    buf.Write(TXT);
+                    x.Write(buf, 0, buf.Length);
                 }
                 //using (var ie = fl.Replay(tx))
                 //{
