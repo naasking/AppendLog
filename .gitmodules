@@ -1,0 +1,3 @@
+[submodule "Biby"]
+	path = Biby
+	url = https://github.com/naasking/Biby.git

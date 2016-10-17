@@ -33,7 +33,7 @@ namespace AppendLog
         //format to literal append-only with fixed-size segments, so given any file length we can compute
         //the last flushed segment and check for garbage. Segments are of two types, internal | complete.
         //Complete segments terminate a full transaction, and consist of a sequence of internal
-        //segments. Last flused segment may be internal or complete. If complete, that's the last block
+        //segments. Last flushed segment may be internal or complete. If complete, that's the last block
         //of the last transaction. If internal, we step back until we hit the first complete segment,
         //truncate the log file to that point. We need some sort of magic number for each segment
         //header to verify whether the segment is garbage. Log file:
@@ -51,6 +51,8 @@ namespace AppendLog
         // incomplete, consisting of only internal blocks occurring before the last completed tx. Is
         // there some block reuse implementation? Perhaps upon opening the log file, it can find and
         // enqueue each such block onto a list which is consulted before atomic increment.
+        //   LogHeader = { VERS=long, Magic=GUID }
+        //   BlockType = Complete(GUID:128, TxId:64, Length:9) | Internal(GUID:128, TxId:64, Count:9)
 
         // current log file version number
         internal const long VERSION = 0x01;

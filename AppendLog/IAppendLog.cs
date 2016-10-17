@@ -145,29 +145,29 @@ namespace AppendLog
             }
         }
 
-        internal static void WriteId(this long id, byte[] x)
+        internal static void WriteId(this long id, byte[] x, int i = 0)
         {
             if (BitConverter.IsLittleEndian)
             {
-                x[7] = (byte)(id         & 0xFFFF);
-                x[6] = (byte)((id >>  8) & 0xFFFF);
-                x[5] = (byte)((id >> 16) & 0xFFFF);
-                x[4] = (byte)((id >> 24) & 0xFFFF);
-                x[3] = (byte)((id >> 32) & 0xFFFF);
-                x[2] = (byte)((id >> 40) & 0xFFFF);
-                x[1] = (byte)((id >> 48) & 0xFFFF);
-                x[0] = (byte)((id >> 56) & 0xFFFF);
+                x[0 + i] = (byte)((id >> 56) & 0xFFFF);
+                x[1 + i] = (byte)((id >> 48) & 0xFFFF);
+                x[2 + i] = (byte)((id >> 40) & 0xFFFF);
+                x[3 + i] = (byte)((id >> 32) & 0xFFFF);
+                x[4 + i] = (byte)((id >> 24) & 0xFFFF);
+                x[5 + i] = (byte)((id >> 16) & 0xFFFF);
+                x[6 + i] = (byte)((id >>  8) & 0xFFFF);
+                x[7 + i] = (byte)(id         & 0xFFFF);
             }
             else
             {
-                x[0] = (byte)(id         & 0xFFFF);
-                x[1] = (byte)((id >>  8) & 0xFFFF);
-                x[2] = (byte)((id >> 16) & 0xFFFF);
-                x[3] = (byte)((id >> 24) & 0xFFFF);
-                x[4] = (byte)((id >> 32) & 0xFFFF);
-                x[5] = (byte)((id >> 40) & 0xFFFF);
-                x[6] = (byte)((id >> 48) & 0xFFFF);
-                x[7] = (byte)((id >> 56) & 0xFFFF);
+                x[0 + i] = (byte)(id         & 0xFFFF);
+                x[1 + i] = (byte)((id >>  8) & 0xFFFF);
+                x[2 + i] = (byte)((id >> 16) & 0xFFFF);
+                x[3 + i] = (byte)((id >> 24) & 0xFFFF);
+                x[4 + i] = (byte)((id >> 32) & 0xFFFF);
+                x[5 + i] = (byte)((id >> 40) & 0xFFFF);
+                x[6 + i] = (byte)((id >> 48) & 0xFFFF);
+                x[7 + i] = (byte)((id >> 56) & 0xFFFF);
             }
         }
         #endregion
