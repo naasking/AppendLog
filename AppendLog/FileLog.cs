@@ -8,6 +8,7 @@ using System.Text;
 using System.IO;
 using System.Diagnostics;
 using System.Runtime.Remoting;
+using AppendLog.Internals;
 
 namespace AppendLog
 {
@@ -53,15 +54,15 @@ namespace AppendLog
         // enqueue each such block onto a list which is consulted before atomic increment.
         //   LogHeader = { VERS=long, Magic=GUID }
         //   BlockType = Complete(GUID:128, TxId:64, Length:9) | Internal(GUID:128, TxId:64, Count:9)
-
-        // current log file version number
-        internal const long VERSION = 0x01;
+        
         // The size of an entry header.
         internal const int EHDR_SIZE = sizeof(int);
         // The size of the log file header which consists of Int64 version # followed by the last committed transaction id.
         internal const long LHDR_SIZE = sizeof(long) + sizeof(long);
         // The size of the log file header which consists of Int64 version # followed by the last committed transaction id.
         internal const int TXID_POS = sizeof(long);
+        // the current file format version #
+        static readonly Version VERSION = new Version(0, 0, 0, 1);
         
         /// <summary>
         /// An async FileLog constructor.
@@ -75,29 +76,43 @@ namespace AppendLog
             // check the file's version number if file exists, else write it out
             long next;
             var fs = new FileStream(path, FileMode.OpenOrCreate, FileAccess.ReadWrite, FileShare.Read, 4096, true);
-            var buf = new byte[LHDR_SIZE];
-            if (fs.Length < LHDR_SIZE)
+            var buf = new byte[BlockHeader.Size];
+            if (fs.Length < LogHeader.Size)
             {
-                VERSION.WriteId(buf);
-                await fs.WriteAsync(buf, 0, TXID_POS);
-                LHDR_SIZE.WriteId(buf);
-                await fs.WriteAsync(buf, 0, TXID_POS);
+                var hdr = new LogHeader(VERSION, Guid.NewGuid());
+                hdr.CopyTo(buf, 0);
+                await fs.WriteAsync(buf, 0, LogHeader.Size);
+                next = BlockHeader.BlockSize;
                 await fs.FlushAsync();
-                next = LHDR_SIZE;
             }
             else
             {
-                await fs.ReadAsync(buf, 0, buf.Length);
-                var vers = buf.GetNextId();
-                if (vers != VERSION)
+                await fs.ReadAsync(buf, 0, LogHeader.Size);
+                var hdr = new LogHeader(buf, 0);
+                if (hdr.Version != VERSION)
                 {
                     fs.Dispose();
-                    throw new NotSupportedException(string.Format("File log expects version {0}.{1}.{2} but found version {3}.{4}.{5}",
-                        Major(VERSION), Minor(VERSION), Revision(VERSION), Major(vers), Minor(vers), Revision(vers)));
+                    throw new NotSupportedException(
+                        string.Format("File log expects version {0} but found version {1}", VERSION, hdr.Version));
                 }
-                next = buf.GetNextId(sizeof(long));
+                await LastBlock(path, fs, buf);
+                fs.SetLength(next = fs.Position); // eliminate incomplete transactions
             }
             return new FileLog { path = path, next = next, writer = fs, buf = buf };
+        }
+
+        static async Task LastBlock(string path, FileStream fs, byte[] buf)
+        {
+            BlockHeader hdr;
+            var probe = BlockHeader.Last(fs.Length);
+            do
+            {
+                fs.Position = probe;
+                probe -= BlockHeader.BlockSize;
+                await fs.ReadAsync(buf, 0, BlockHeader.Size);
+                hdr = new BlockHeader(path, buf, 0);
+            } while (hdr.Type != BlockType.Final);
+            return;
         }
 
         /// <summary>

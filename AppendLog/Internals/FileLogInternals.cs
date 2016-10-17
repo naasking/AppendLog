@@ -92,13 +92,23 @@ namespace AppendLog.Internals
         }
 
         /// <summary>
-        /// Compute the position of the header
+        /// Compute the position of the last header relative to the given position.
         /// </summary>
         /// <param name="pos"></param>
         /// <returns></returns>
-        public long HeaderFor(long pos)
+        public static long Last(long pos)
         {
-            return pos & BlockMask;
+            return BlockSize * (1 + pos / BlockMask) - Size;
+        }
+
+        /// <summary>
+        /// Compute the position of the current/upcoming header relative to the given position.
+        /// </summary>
+        /// <param name="pos"></param>
+        /// <returns></returns>
+        public static long Current(long pos)
+        {
+            return BlockSize * (2 + pos / BlockMask) - Size;
         }
 
         /// <summary>
@@ -137,7 +147,7 @@ namespace AppendLog.Internals
         public LogHeader(byte[] buf, int i)
         {
             Contract.Requires(buf != null);
-            Contract.Requires(0 <= i && i + 27 < buf.Length);
+            Contract.Requires(0 <= i && i + Size < buf.Length);
             Version = new Version(buf.GetInt32(i), buf.GetInt32(i + 4), 0, buf.GetInt32(i + 8));
             Id = buf.GetGuid(i + 12);
         }
@@ -166,5 +176,7 @@ namespace AppendLog.Internals
             Version.Revision.CopyTo(buf, i + 8);
             Id.CopyTo(buf, i + 12);
         }
+
+        public const int Size = 12 + 16; // version + guid
     }
 }

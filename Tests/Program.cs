@@ -24,6 +24,7 @@ Sed cursus neque in semper maximus. Integer condimentum erat vel porttitor maxim
         {
             TestLogHeader();
             TestBlockHeader();
+            TestBlockMath();
             //BasicTest();
             //MultiThreadTest(FileLog.Create("multi.db").Result);
             //MultiThreadTest(MappedLog.Create("multi.db").Result);
@@ -193,6 +194,19 @@ Sed cursus neque in semper maximus. Integer condimentum erat vel porttitor maxim
             Debug.Assert(hdr.Type == hdr2.Type);
             Debug.Assert(hdr.Count == hdr.Count);
             Debug.Assert(hdr.Transaction == hdr2.Transaction);
+        }
+
+        static void TestBlockMath()
+        {
+            var rand = BlockHeader.BlockSize - BlockHeader.Size - 45;
+            var pos = BlockHeader.BlockSize - BlockHeader.Size;
+            Debug.Assert(pos == BlockHeader.Last(rand));
+            Debug.Assert(pos == BlockHeader.Last(rand + 12));
+            Debug.Assert(pos + BlockHeader.BlockSize == BlockHeader.Last(rand + BlockHeader.BlockSize));
+
+            Debug.Assert(pos + BlockHeader.BlockSize == BlockHeader.Current(rand));
+            Debug.Assert(pos + BlockHeader.BlockSize == BlockHeader.Current(rand + 12));
+            Debug.Assert(pos + 2 * BlockHeader.BlockSize == BlockHeader.Current(rand + BlockHeader.BlockSize));
         }
     }
 }
