@@ -11,7 +11,7 @@ namespace Biby
     /// <summary>
     /// Endian/byte-order operations.
     /// </summary>
-    static class Endian
+    public static class Endian
     {
         /// <summary>
         /// Copy the value to the buffer in big endian format.

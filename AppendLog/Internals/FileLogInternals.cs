@@ -86,7 +86,7 @@ namespace AppendLog.Internals
             Contract.Requires(buf != null);
             Contract.Requires(0 <= i && i + Size < buf.Length);
             Id.CopyTo(buf, i);
-            Transaction.Id.WriteId(buf, i + 16);
+            Transaction.Id.CopyTo(buf, i + 16);
             var masked = unchecked((ushort)((ushort)Count | ((ushort)Type) << 15));
             masked.CopyTo(buf, i + 16 + 8);
         }
@@ -109,6 +109,16 @@ namespace AppendLog.Internals
         public static long Current(long pos)
         {
             return BlockSize * (2 + pos / BlockMask) - Size;
+        }
+
+        /// <summary>
+        /// The offset the block headers add to the current position.
+        /// </summary>
+        /// <param name="pos"></param>
+        /// <returns></returns>
+        public static long Offset(long pos)
+        {
+            return Size * pos / BlockSize;
         }
 
         /// <summary>
