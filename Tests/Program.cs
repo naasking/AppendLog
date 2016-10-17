@@ -22,12 +22,13 @@ Sed cursus neque in semper maximus. Integer condimentum erat vel porttitor maxim
         static void Main(string[] args)
         {
             BasicTest();
-            MultiThreadTest();
+            MultiThreadTest(FileLog.Create("multi.db").Result);
+            //MultiThreadTest(MappedLog.Create("multi.db").Result);
             SingleTest();
         }
 
         const int ITER = 1000;
-        static FileLog log;
+        static IAppendLog log;
 
         static void SingleTest()
         {
@@ -68,9 +69,9 @@ Sed cursus neque in semper maximus. Integer condimentum erat vel porttitor maxim
             Console.WriteLine("Single: {0:0} tx/sec", 3 * ITER / secs);
         }
 
-        static void MultiThreadTest()
+        static void MultiThreadTest(IAppendLog x)
         {
-            log = FileLog.Create("multi.db").Result;
+            log = x;
             var clock = new Stopwatch();
             try
             {
@@ -96,7 +97,7 @@ Sed cursus neque in semper maximus. Integer condimentum erat vel porttitor maxim
                     }
                 }
                 var secs = clock.ElapsedMilliseconds / 1000.0;
-                Console.WriteLine("FileLog: {0:0} tx/sec", 3 * ITER / secs);
+                Console.WriteLine("{0}: {1:0} tx/sec", x.GetType().Name, 3 * ITER / secs);
                 Debug.Assert(count == 3 * ITER);
             }
             finally

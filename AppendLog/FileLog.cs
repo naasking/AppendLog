@@ -32,11 +32,25 @@ namespace AppendLog
         //FIXME: currently seek around too much which causes an order of magnitude slowdown. Change log
         //format to literal append-only with fixed-size segments, so given any file length we can compute
         //the last flushed segment and check for garbage. Segments are of two types, internal | complete.
-        //Complete segments correspond to a full transaction, and consist of a sequence of internal
-        //segments. Last flused segment may be internal or complete. If complete, that's the last
-        //committed transaction. If internal, we step back until we hit the first complete segment,
+        //Complete segments terminate a full transaction, and consist of a sequence of internal
+        //segments. Last flused segment may be internal or complete. If complete, that's the last block
+        //of the last transaction. If internal, we step back until we hit the first complete segment,
         //truncate the log file to that point. We need some sort of magic number for each segment
-        //header to verify whether the segment is garbage.
+        //header to verify whether the segment is garbage. Log file:
+        // +---------+---------+--------+------+------+--------+------+------+-----+
+        // | VERSION | MAGIC # | Data...|Length|MAGIC#| Data...|Length|MAGIC#| ... |
+        // +---------+---------+--------+------+------+--------+------+------+-----+
+        // Magic # should probably be a GUID or something.
+        //
+        // This also extends to arbitrary concurrent writers by extending the header block to include
+        // a 64-bit txid designating the first block. Each writer then obtains the next block# to
+        // write from log.GetNextBlock(), which does: Interlocked.Increment(ref blockno) >> 9
+        // to compute the next free block #.
+        //
+        // However, this now permits an inconsistent log file because some transactions may still be
+        // incomplete, consisting of only internal blocks occurring before the last completed tx. Is
+        // there some block reuse implementation? Perhaps upon opening the log file, it can find and
+        // enqueue each such block onto a list which is consulted before atomic increment.
 
         // current log file version number
         internal const long VERSION = 0x01;
@@ -55,7 +69,7 @@ namespace AppendLog
         public static async Task<FileLog> Create(string path)
         {
             if (path == null) throw new ArgumentNullException("path");
-            path = Path.GetFullPath(path);
+            path = string.Intern(Path.GetFullPath(path));
             // check the file's version number if file exists, else write it out
             long next;
             var fs = new FileStream(path, FileMode.OpenOrCreate, FileAccess.ReadWrite, FileShare.Read, 4096, true);
@@ -89,7 +103,7 @@ namespace AppendLog
         /// </summary>
         public TransactionId First
         {
-            get { return new TransactionId { Id = LHDR_SIZE }; }
+            get { return new TransactionId(LHDR_SIZE, path); }
         }
 
         /// <summary>
@@ -99,6 +113,8 @@ namespace AppendLog
         /// <returns>A sequence of transactions since the given event.</returns>
         public IEventEnumerator Replay(TransactionId last)
         {
+            if (!ReferenceEquals(last.Path, path))
+                throw new ArgumentException(string.Format("The given TransactionId({0}) does not designate this log ({1}).", last, First), "last");
             return new EventEnumerator(this, last);
         }
 
@@ -115,7 +131,7 @@ namespace AppendLog
         public Stream Append(out TransactionId tx)
         {
             Monitor.Enter(writer);
-            tx = new TransactionId { Id = next };
+            tx = new TransactionId(next, path);
             return new AtomicAppender(this, writer, next, buf);
         }
 
@@ -168,7 +184,7 @@ namespace AppendLog
                 Debug.Assert(file.Position <= end);  // if pos > end, then read/seek logic is messed up
                 if (file.Position == end)
                     return false;
-                Transaction = new TransactionId { Id = file.Position };
+                Transaction = new TransactionId(file.Position, log.path);
                 await file.ReadAsync(buf, 0, EHDR_SIZE);
                 length = buf.GetLength();
                 Stream = new BoundedStream(log, file.Position, length);
