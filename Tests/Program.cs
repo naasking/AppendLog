@@ -6,6 +6,7 @@ using System.Threading.Tasks;
 using System.Text;
 using System.Diagnostics;
 using AppendLog;
+using AppendLog.Internals;
 
 namespace Tests
 {
@@ -21,10 +22,12 @@ Sed cursus neque in semper maximus. Integer condimentum erat vel porttitor maxim
 
         static void Main(string[] args)
         {
-            BasicTest();
-            MultiThreadTest(FileLog.Create("multi.db").Result);
+            TestLogHeader();
+            TestBlockHeader();
+            //BasicTest();
+            //MultiThreadTest(FileLog.Create("multi.db").Result);
             //MultiThreadTest(MappedLog.Create("multi.db").Result);
-            SingleTest();
+            //SingleTest();
         }
 
         const int ITER = 1000;
@@ -168,6 +171,28 @@ Sed cursus neque in semper maximus. Integer condimentum erat vel porttitor maxim
                 fl.Dispose();
                 File.Delete(Path.GetFullPath(path));
             }
+        }
+
+        static void TestLogHeader()
+        {
+            var hdr = new LogHeader(new Version(0, 0, 0, 1), Guid.NewGuid());
+            var buf = new byte[128];
+            hdr.CopyTo(buf, 3);
+            var hdr2 = new LogHeader(buf, 3);
+            Debug.Assert(hdr.Version.Equals(hdr2.Version));
+            Debug.Assert(hdr.Id == hdr2.Id);
+        }
+
+        static void TestBlockHeader()
+        {
+            var hdr = new BlockHeader(Guid.NewGuid(), "foo.db", sizeof(long), 237, BlockType.Final);
+            var buf = new byte[512];
+            hdr.CopyTo(buf, buf.Length - BlockHeader.Size);
+            var hdr2 = new BlockHeader("foo.db", buf, buf.Length - BlockHeader.Size);
+            Debug.Assert(hdr.Id == hdr2.Id);
+            Debug.Assert(hdr.Type == hdr2.Type);
+            Debug.Assert(hdr.Count == hdr.Count);
+            Debug.Assert(hdr.Transaction == hdr2.Transaction);
         }
     }
 }
