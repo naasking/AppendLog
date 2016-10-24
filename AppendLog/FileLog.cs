@@ -25,6 +25,7 @@ namespace AppendLog
         long next;
         FileStream header;
         FileStream writer;
+        byte[] buf = new byte[sizeof(long)];
 
         //FIXME: creating FileStreams is expensive, so perhaps have a BoundedStream pool for readers?
 
@@ -36,7 +37,7 @@ namespace AppendLog
         internal const int LHDR_MAJOR = 0;  // offset of major vers#
         internal const int LHDR_MINOR = 4;  // offset of minor vers#
         internal const int LHDR_REV   = 8;  // offset of revision vers#
-        internal const int LHDR_SIZE = 1024; // major + minor + rev + padding(6) + txid[62]
+        internal const int LHDR_SIZE = 24; // major + minor + rev + padding(6) + txid[62]
         internal const int LHDR_TX = 16;    // the start of the tx buffer
         
         ~FileLog()
@@ -48,15 +49,16 @@ namespace AppendLog
         /// An async FileLog constructor.
         /// </summary>
         /// <param name="path">The path to the log file.</param>
+        /// <param name="useAsync">Instruct the underlying IO subsystem to optimize for async I/O.</param>
         /// <returns>An <see cref="FileLog"/> instance.</returns>
-        public static async Task<FileLog> Create(string path)
+        public static async Task<FileLog> Create(string path, bool useAsync)
         {
             if (path == null) throw new ArgumentNullException("path");
             path = string.Intern(Path.GetFullPath(path));
             // check the file's version number if file exists, else write it out
             long next;
-            var header = new FileStream(path, FileMode.OpenOrCreate, FileAccess.ReadWrite, FileShare.ReadWrite);
-            var writer = new FileStream(path, FileMode.OpenOrCreate, FileAccess.ReadWrite, FileShare.ReadWrite, 4096, true);
+            var header = new FileStream(path, FileMode.OpenOrCreate, FileAccess.ReadWrite, FileShare.ReadWrite, LHDR_SIZE, useAsync);
+            var writer = new FileStream(path, FileMode.OpenOrCreate, FileAccess.ReadWrite, FileShare.ReadWrite, 4096, useAsync);
             var buf = new byte[LHDR_SIZE];
             Version vers;
             if (header.Length < LHDR_SIZE)
@@ -123,7 +125,13 @@ namespace AppendLog
             Monitor.Enter(writer);
             transaction = new TransactionId(next, path);
             output = new BoundedStream(writer, next, int.MaxValue);
-            return new Appender(this);
+            return new Appender(this) { buf = buf };
+        }
+
+        [Conditional("DEBUG")]
+        public void Stats()
+        {
+            Console.WriteLine("FileLog ({0}): {1} bytes", Path.GetFileName(path), writer.Length);
         }
 
         public void Dispose()
@@ -151,7 +159,11 @@ namespace AppendLog
                 this.log = log;
                 this.writer = log.writer;
                 this.header = log.header;
-                this.buf = new byte[sizeof(long)];
+                //this.buf = new byte[sizeof(long)];
+            }
+            ~Appender()
+            {
+                Dispose();
             }
             public void Dispose()
             {
@@ -182,6 +194,7 @@ namespace AppendLog
                         header.Flush();
                     }
                     Monitor.Exit(x);
+                    GC.SuppressFinalize(this);
                 }
             }
         }

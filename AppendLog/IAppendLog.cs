@@ -109,7 +109,7 @@ namespace AppendLog
         //}
 
         #region Internal marshalling to/from byte arrays in big endian format
-        internal static long ReadInt64(this byte[] x, int i = 0)
+        public static long ReadInt64(this byte[] x, int i = 0)
         {
             unchecked
             {
@@ -118,8 +118,8 @@ namespace AppendLog
                      : (ulong)x[0 + i]       | (ulong)x[1 + i] <<  8 | (ulong)x[2 + i] << 16 | (ulong)x[3 + i] << 24 | (ulong)x[4 + i] << 32 | (ulong)x[5 + i] << 40 | (ulong)x[6 + i] << 48 | (ulong)x[7 + i] << 56);
             }
         }
-        
-        internal static int ReadInt32(this byte[] x, int i = 0)
+
+        public static int ReadInt32(this byte[] x, int i = 0)
         {
             unchecked
             {
@@ -129,7 +129,7 @@ namespace AppendLog
             }
         }
 
-        internal static void Write(this byte[] x, int len, int i = 0)
+        public static void Write(this byte[] x, int len, int i = 0)
         {
             unchecked
             {
@@ -150,7 +150,7 @@ namespace AppendLog
             }
         }
 
-        internal static void Write(this byte[] x, long id, int i = 0)
+        public static void Write(this byte[] x, long id, int i = 0)
         {
             unchecked
             {

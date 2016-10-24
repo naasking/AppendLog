@@ -35,9 +35,9 @@ namespace AppendLog
 
         public override long Seek(long offset, SeekOrigin origin)
         {
-            var pos = origin == SeekOrigin.Begin ? start + offset :
-                      origin == SeekOrigin.Current ? Position + offset :
-                                                     Length + offset;
+            var pos = origin == SeekOrigin.Begin   ? start + offset:
+                      origin == SeekOrigin.Current ? underlying.Position + offset:
+                                                     underlying.Length + offset;
             if (pos < start) throw new ArgumentException("Cannot seek before the beginning of the log.", "offset");
             if (pos > start + length) throw new ArgumentException("Cannot seek past the end of the log.", "offset");
             return underlying.Seek(pos, SeekOrigin.Begin);

@@ -1,4 +1,5 @@
 ﻿using System;
+using System.Threading;
 using System.IO;
 using System.Collections.Generic;
 using System.Linq;
@@ -36,25 +37,60 @@ Sed cursus neque in semper maximus. Integer condimentum erat vel porttitor maxim
             var path = Path.GetFullPath("test.db");
             try
             {
+                var buf = new byte[sizeof(long)];
+                TransactionId tx;
                 tmpbuf = Encoding.ASCII.GetBytes(TXT);
-                using (var fs = File.OpenWrite(path))
+                using (var fs = new FileStream(path, FileMode.OpenOrCreate, FileAccess.ReadWrite, FileShare.ReadWrite, 4 * 4096, false))
                 {
+                    // log header
+                    fs.Write(buf, 0, sizeof(int));
+                    fs.Write(buf, 0, sizeof(int));
+                    fs.Write(buf, 0, sizeof(int));
+                    fs.Write(buf, 0, sizeof(int));
+                    fs.Write(buf, 0, sizeof(int));
+                    fs.Write(buf, 0, sizeof(int));
+
                     clock.Start();
-                    var file = new BoundedStream(fs, fs.Length, int.MaxValue);
                     for (int i = 0; i < 3 * ITER; ++i)
                     {
-                        file.Write(tmpbuf, 0, tmpbuf.Length);
-                        file.Write(tmpbuf, 0, sizeof(int));
-                        file.Flush();
-                        file.Seek(0, SeekOrigin.Begin);
-                        file.Write(tmpbuf, 0, sizeof(int));
-                        file.Flush();
-                        file.Seek(0, SeekOrigin.End);
+                        // begin FileLog.Append
+                        Monitor.Enter(fs);
+                        tx = log.First;
+                        var file = new BoundedStream(fs, fs.Length, int.MaxValue);
+                        try
+                        {
+                            var start = file.Position;
+
+                            // end FileLog.Append
+                            file.Write(tmpbuf, 0, tmpbuf.Length);
+
+                            // begin FileLog.Append.Dispose
+                            var length = file.Length - start;
+                            if (length > 0)
+                            {
+                                if (file.Position != file.Length)
+                                    file.Seek(0, SeekOrigin.End);
+                                buf.Write(length);
+                                file.Write(buf, 0, sizeof(int));
+                                file.Flush();
+                                var pos = file.Position;
+                                file.Seek(16, SeekOrigin.Begin);
+                                buf.Write(pos);
+                                file.Write(buf, 0, sizeof(long));
+                                file.Flush();
+                                file.Seek(0, SeekOrigin.End);
+                            }
+                        }
+                        finally
+                        {
+                            Monitor.Exit(fs);
+                        }
+                        //end FileLog.Appender.Dispose
                     }
                     clock.Stop();
+                    Console.WriteLine("Single size: {0} kB", fs.Length);
                 }
-                var secs = clock.ElapsedMilliseconds / 1000.0;
-                Console.WriteLine("Single: {0:0} tx/sec", 3 * ITER / secs);
+                PrintStats("Single", clock.ElapsedMilliseconds);
             }
             finally
             {
@@ -64,7 +100,7 @@ Sed cursus neque in semper maximus. Integer condimentum erat vel porttitor maxim
 
         static void MultiThreadTest()
         {
-            log = FileLog.Create("multi.db").Result;
+            log = FileLog.Create("multi.db", false).Result;
             var clock = new Stopwatch();
             try
             {
@@ -76,21 +112,21 @@ Sed cursus neque in semper maximus. Integer condimentum erat vel porttitor maxim
                 //t0.Wait();
                 //t1.Wait();
                 clock.Stop();
-                //var count = 0;
-                //using (var ie = log.Replay(log.First))
-                //{
-                //    while (ie.MoveNext().Result)
-                //    {
-                //        using (var tr = new StreamReader(ie.Stream))
-                //        {
-                //            Debug.Assert(tr.ReadToEnd() == TXT);
-                //            ++count;
-                //        }
-                //    }
-                //}
-                var secs = clock.ElapsedMilliseconds / 1000.0;
-                Console.WriteLine("FileLog: {0:0} tx/sec", 3 * ITER / secs);
-                //Debug.Assert(count == 3 * ITER);
+                log.Stats();
+                var count = 0;
+                using (var ie = log.Replay(log.First))
+                {
+                    while (ie.MoveNext().Result)
+                    {
+                        using (var tr = new StreamReader(ie.Stream))
+                        {
+                            Debug.Assert(tr.ReadToEnd() == TXT);
+                            ++count;
+                        }
+                    }
+                }
+                PrintStats("FileLog", clock.ElapsedMilliseconds);
+                Debug.Assert(count == 3 * ITER);
             }
             finally
             {
@@ -101,7 +137,7 @@ Sed cursus neque in semper maximus. Integer condimentum erat vel porttitor maxim
 
         static void Run()
         {
-            var tx = log.First;
+            TransactionId tx;
             for (int i = 0; i < 3 * ITER; ++i)
             {
                 Stream output;
@@ -112,10 +148,16 @@ Sed cursus neque in semper maximus. Integer condimentum erat vel porttitor maxim
             }
         }
 
+        static void PrintStats(string name, long ms)
+        {
+            var secs = ms / 1000.0;
+            Console.WriteLine("{0}: {1:0} tx/sec", name, 3 * ITER / secs);
+        }
+
         static void BasicTest()
         {
             var path = "basic.db";
-            var log = FileLog.Create(path).Result;
+            var log = FileLog.Create(path, false).Result;
             try
             {
                 TransactionId tx;
