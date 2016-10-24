@@ -57,7 +57,7 @@ namespace AppendLog
         /// The <paramref name="async"/> parameter is largely optional, in that it's safe to simply
         /// provide 'false' and everything should still work.
         /// </remarks>
-        Stream Append(out TransactionId transaction);
+        IDisposable Append(out Stream output, out TransactionId transaction);
     }
     
     /// <summary>
@@ -93,81 +93,93 @@ namespace AppendLog
         //    return lastEvent;
         //}
 
-        /// <summary>
-        /// Replay events using a callback.
-        /// </summary>
-        /// <param name="log"></param>
-        /// <param name="lastEvent"></param>
-        /// <param name="forEach"></param>
-        /// <returns></returns>
-        public static async Task Replay(this IAppendLog log, TransactionId lastEvent, Func<TransactionId, Stream, Task<bool>> forEach)
+        ///// <summary>
+        ///// Replay events using a callback.
+        ///// </summary>
+        ///// <param name="log"></param>
+        ///// <param name="lastEvent"></param>
+        ///// <param name="forEach"></param>
+        ///// <returns></returns>
+        //public static async Task Replay(this IAppendLog log, TransactionId lastEvent, Func<TransactionId, Stream, Task<bool>> forEach)
+        //{
+        //    using (var ie = log.Replay(lastEvent))
+        //    {
+        //        while (await ie.MoveNext())
+        //        {
+        //            if (!await forEach(ie.Transaction, ie.Stream))
+        //                return;
+        //        }
+        //    }
+        //}
+
+        #region Internal marshalling to/from byte arrays in big endian format
+        internal static long ReadInt64(this byte[] x, int i = 0)
         {
-            using (var ie = log.Replay(lastEvent))
+            unchecked
             {
-                while (await ie.MoveNext())
+                return (long)(BitConverter.IsLittleEndian
+                     ? (ulong)x[0 + i] << 56 | (ulong)x[1 + i] << 48 | (ulong)x[2 + i] << 40 | (ulong)x[3 + i] << 32 | (ulong)x[4 + i] << 24 | (ulong)x[5 + i] << 16 | (ulong)x[6 + i] << 8 | (ulong)x[7 + i]
+                     : (ulong)x[0 + i]       | (ulong)x[1 + i] <<  8 | (ulong)x[2 + i] << 16 | (ulong)x[3 + i] << 24 | (ulong)x[4 + i] << 32 | (ulong)x[5 + i] << 40 | (ulong)x[6 + i] << 48 | (ulong)x[7 + i] << 56);
+            }
+        }
+        
+        internal static int ReadInt32(this byte[] x, int i = 0)
+        {
+            unchecked
+            {
+                return (int)(BitConverter.IsLittleEndian
+                     ? (uint)x[0 + i] << 24 | (uint)x[1 + i] << 16 | (uint)x[2 + i] <<  8 | (uint)x[3 + i]
+                     : (uint)x[0 + i]       | (uint)x[1 + i] <<  8 | (uint)x[2 + i] << 16 | (uint)x[3 + i] << 24);
+            }
+        }
+
+        internal static void Write(this byte[] x, int len, int i = 0)
+        {
+            unchecked
+            {
+                if (BitConverter.IsLittleEndian)
                 {
-                    if (!await forEach(ie.Transaction, ie.Stream))
-                        return;
+                    x[0 + i] = (byte)((len >> 24) & 0xFFFF);
+                    x[1 + i] = (byte)((len >> 16) & 0xFFFF);
+                    x[2 + i] = (byte)((len >>  8) & 0xFFFF);
+                    x[3 + i] = (byte)(len & 0xFFFF);
+                }
+                else
+                {
+                    x[0 + i] = (byte)(len & 0xFFFF);
+                    x[1 + i] = (byte)((len >>  8) & 0xFFFF);
+                    x[2 + i] = (byte)((len >> 16) & 0xFFFF);
+                    x[3 + i] = (byte)((len >> 24) & 0xFFFF);
                 }
             }
         }
 
-        #region Internal marshalling to/from byte arrays in big endian format
-        internal static long GetNextId(this byte[] x, int i = 0)
+        internal static void Write(this byte[] x, long id, int i = 0)
         {
-            return BitConverter.IsLittleEndian
-                 ? x[7 + i] | x[6 + i] << 8 | x[5 + i] << 16 | x[4 + i] << 24 | x[3 + i] << 32 | x[2 + i] << 40 | x[1 + i] << 48 | x[0 + i] << 56
-                 : x[0 + i] | x[1 + i] << 8 | x[2 + i] << 16 | x[3 + i] << 24 | x[4 + i] << 32 | x[5 + i] << 40 | x[6 + i] << 48 | x[7 + i] << 56;
-        }
-        
-        internal static int GetLength(this byte[] x, int i = 0)
-        {
-            return BitConverter.IsLittleEndian
-                 ? x[3 + i] | x[2 + i] << 8 | x[1 + i] << 16 | x[0 + i] << 24
-                 : x[0 + i] | x[1 + i] << 8 | x[2 + i] << 16 | x[3 + i] << 24;
-        }
-
-        internal static void WriteLength(this int len, byte[] x)
-        {
-            if (BitConverter.IsLittleEndian)
+            unchecked
             {
-                x[3] = (byte)(len         & 0xFFFF);
-                x[2] = (byte)((len >>  8) & 0xFFFF);
-                x[1] = (byte)((len >> 16) & 0xFFFF);
-                x[0] = (byte)((len >> 24) & 0xFFFF);
-            }
-            else
-            {
-                x[0] = (byte)(len         & 0xFFFF);
-                x[1] = (byte)((len >>  8) & 0xFFFF);
-                x[2] = (byte)((len >> 16) & 0xFFFF);
-                x[3] = (byte)((len >> 24) & 0xFFFF);
-            }
-        }
-
-        internal static void WriteId(this long id, byte[] x)
-        {
-            if (BitConverter.IsLittleEndian)
-            {
-                x[7] = (byte)(id         & 0xFFFF);
-                x[6] = (byte)((id >>  8) & 0xFFFF);
-                x[5] = (byte)((id >> 16) & 0xFFFF);
-                x[4] = (byte)((id >> 24) & 0xFFFF);
-                x[3] = (byte)((id >> 32) & 0xFFFF);
-                x[2] = (byte)((id >> 40) & 0xFFFF);
-                x[1] = (byte)((id >> 48) & 0xFFFF);
-                x[0] = (byte)((id >> 56) & 0xFFFF);
-            }
-            else
-            {
-                x[0] = (byte)(id         & 0xFFFF);
-                x[1] = (byte)((id >>  8) & 0xFFFF);
-                x[2] = (byte)((id >> 16) & 0xFFFF);
-                x[3] = (byte)((id >> 24) & 0xFFFF);
-                x[4] = (byte)((id >> 32) & 0xFFFF);
-                x[5] = (byte)((id >> 40) & 0xFFFF);
-                x[6] = (byte)((id >> 48) & 0xFFFF);
-                x[7] = (byte)((id >> 56) & 0xFFFF);
+                if (BitConverter.IsLittleEndian)
+                {
+                    x[0 + i] = (byte)((id >> 56) & 0xFFFF);
+                    x[1 + i] = (byte)((id >> 48) & 0xFFFF);
+                    x[2 + i] = (byte)((id >> 40) & 0xFFFF);
+                    x[3 + i] = (byte)((id >> 32) & 0xFFFF);
+                    x[4 + i] = (byte)((id >> 24) & 0xFFFF);
+                    x[5 + i] = (byte)((id >> 16) & 0xFFFF);
+                    x[6 + i] = (byte)((id >>  8) & 0xFFFF);
+                    x[7 + i] = (byte)(id & 0xFFFF);
+                }
+                else
+                {
+                    x[0 + i] = (byte)(id & 0xFFFF);
+                    x[1 + i] = (byte)((id >>  8) & 0xFFFF);
+                    x[2 + i] = (byte)((id >> 16) & 0xFFFF);
+                    x[3 + i] = (byte)((id >> 24) & 0xFFFF);
+                    x[4 + i] = (byte)((id >> 32) & 0xFFFF);
+                    x[5 + i] = (byte)((id >> 40) & 0xFFFF);
+                    x[6 + i] = (byte)((id >> 48) & 0xFFFF);
+                    x[7 + i] = (byte)((id >> 56) & 0xFFFF);
+                }
             }
         }
         #endregion

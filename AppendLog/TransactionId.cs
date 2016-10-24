@@ -1,33 +1,37 @@
 ﻿using System;
-using System.Collections.Generic;
-using System.Linq;
-using System.Text;
-using System.Threading.Tasks;
+using System.Runtime.Serialization;
 
 namespace AppendLog
 {
     /// <summary>
     /// A transaction identifier.
     /// </summary>
-    public struct TransactionId : IEquatable<TransactionId>
+    [Serializable]
+    public struct TransactionId : IEquatable<TransactionId>, ISerializable
     {
-        long id;
+        readonly long id;
+        readonly string path;
+
+        internal TransactionId(long id, string path)
+        {
+            this.id = Math.Max(id, FileLog.LHDR_SIZE);
+            this.path = path;
+        }
 
         /// <summary>
         /// The integral representation of a transaction identifier.
         /// </summary>
         public long Id
         {
-            get { return Math.Max(id, FileLog.LHDR_SIZE); }
-            internal set { id = value; }
+            get { return id; }
         }
 
         /// <summary>
-        /// The first transaction id possible.
+        /// The log file designated by this transaction.
         /// </summary>
-        public static TransactionId First
+        public string Path
         {
-            get { return new TransactionId { id = FileLog.LHDR_SIZE }; }
+            get { return path; }
         }
 
         /// <summary>
@@ -37,7 +41,7 @@ namespace AppendLog
         /// <returns>True if they are equal, false otherwise.</returns>
         public bool Equals(TransactionId other)
         {
-            return Id == other.Id;
+            return Id == other.Id && ReferenceEquals(path, other.path);
         }
 
         /// <summary>
@@ -65,7 +69,7 @@ namespace AppendLog
         /// <returns></returns>
         public override string ToString()
         {
-            return Id.ToString("X");
+            return string.Format("{0}:{1:X}", System.IO.Path.GetFileName(path), Id);
         }
 
         /// <summary>
@@ -89,5 +93,19 @@ namespace AppendLog
         {
             return left.Id != right.Id;
         }
+
+        #region Serialization interface
+        TransactionId(SerializationInfo info, StreamingContext context)
+        {
+            id = info.GetInt64(nameof(id));
+            path = string.Intern(System.IO.Path.GetFullPath(info.GetString(nameof(path))));
+        }
+
+        void ISerializable.GetObjectData(SerializationInfo info, StreamingContext context)
+        {
+            info.AddValue(nameof(id), Id);
+            info.AddValue(nameof(path), System.IO.Path.GetFileName(path));
+        }
+        #endregion
     }
 }

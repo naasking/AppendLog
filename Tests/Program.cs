@@ -88,9 +88,13 @@ Sed cursus neque in semper maximus. Integer condimentum erat vel porttitor maxim
             var tx = log.First;
             for (int i = 0; i < ITER; ++i)
             {
-                using (var buf = new StreamWriter(log.Append(out tx), Encoding.ASCII))
+                Stream output;
+                using (log.Append(out output, out tx))
                 {
-                    buf.Write(TXT);
+                    using (var buf = new StreamWriter(output, Encoding.ASCII))
+                    {
+                        buf.Write(TXT);
+                    }
                 }
                 //using (var ie = fl.Replay(tx))
                 //{
@@ -110,28 +114,30 @@ Sed cursus neque in semper maximus. Integer condimentum erat vel porttitor maxim
         static void BasicTest()
         {
             var path = "basic.db";
-            var fl = FileLog.Create(path).Result;
+            var log = FileLog.Create(path).Result;
             try
             {
                 TransactionId tx;
-                using (var buf = fl.Append(out tx))
+                Stream buf;
+                using (log.Append(out buf, out tx))
                 {
                     buf.Write(Encoding.ASCII.GetBytes("hello"), 0, 5);
                     buf.Write(Encoding.ASCII.GetBytes("world!"), 0, 6);
                 }
-                using (var buf = fl.Append(out tx))
+                using (log.Append(out buf, out tx))
                 {
                     buf.Write(Encoding.ASCII.GetBytes("hello"), 0, 5);
                     buf.Write(Encoding.ASCII.GetBytes("world!"), 0, 6);
                 }
                 var count = 0;
-                using (var ie = fl.Replay(fl.First))
+                using (var ie = log.Replay(log.First))
                 {
                     while (ie.MoveNext().Result)
                     {
                         using (var tr = new StreamReader(ie.Stream))
                         {
-                            Debug.Assert(tr.ReadToEnd() == "helloworld!");
+                            var tmp = tr.ReadToEnd();
+                            Debug.Assert(tmp == "helloworld!");
                             ++count;
                         }
                     }
@@ -140,7 +146,7 @@ Sed cursus neque in semper maximus. Integer condimentum erat vel porttitor maxim
             }
             finally
             {
-                fl.Dispose();
+                log.Dispose();
                 File.Delete(Path.GetFullPath(path));
             }
         }
