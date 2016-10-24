@@ -28,6 +28,7 @@ Sed cursus neque in semper maximus. Integer condimentum erat vel porttitor maxim
 
         const int ITER = 1000;
         static FileLog log;
+        static byte[] tmpbuf;
 
         static void SingleTest()
         {
@@ -60,6 +61,7 @@ Sed cursus neque in semper maximus. Integer condimentum erat vel porttitor maxim
             var clock = new Stopwatch();
             try
             {
+                tmpbuf = Encoding.ASCII.GetBytes(TXT);
                 clock.Start();
                 var t0 = Task.Run(new Action(Run));
                 var t1 = Task.Run(new Action(Run));
@@ -98,10 +100,11 @@ Sed cursus neque in semper maximus. Integer condimentum erat vel porttitor maxim
                 Stream output;
                 using (log.Append(out output, out tx))
                 {
-                    using (var buf = new StreamWriter(output, Encoding.ASCII))
-                    {
-                        buf.Write(TXT);
-                    }
+                    output.Write(tmpbuf, 0, tmpbuf.Length);
+                    //using (var buf = new StreamWriter(output, Encoding.ASCII))
+                    //{
+                    //    buf.Write(TXT);
+                    //}
                 }
             }
         }
