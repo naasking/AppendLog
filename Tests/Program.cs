@@ -23,7 +23,7 @@ Sed cursus neque in semper maximus. Integer condimentum erat vel porttitor maxim
         {
             BasicTest();
             MultiThreadTest();
-            //SingleTest();
+            SingleTest();
         }
 
         const int ITER = 1000;
@@ -33,18 +33,25 @@ Sed cursus neque in semper maximus. Integer condimentum erat vel porttitor maxim
         {
             var clock = new Stopwatch();
             var path = Path.GetFullPath("test.db");
-            clock.Start();
-            var buf = Encoding.ASCII.GetBytes(TXT);
-            for (int i = 0; i < 3 * ITER; ++i)
+            try
             {
+                var buf = Encoding.ASCII.GetBytes(TXT);
+                clock.Start();
                 using (var file = File.OpenWrite(path))
                 {
-                    file.Write(buf, 0, buf.Length);
+                    for (int i = 0; i < 3 * ITER; ++i)
+                    {
+                        file.Write(buf, 0, buf.Length);
+                    }
                 }
+                clock.Stop();
+                var secs = clock.ElapsedMilliseconds / 1000.0;
+                Console.WriteLine("Single: {0:0} tx/sec", 3 * ITER / secs);
             }
-            clock.Stop();
-            var secs = clock.ElapsedMilliseconds / 1000.0;
-            Console.WriteLine("Single: {0:0} tx/sec", 3 * ITER / secs);
+            finally
+            {
+                File.Delete(path);
+            }
         }
 
         static void MultiThreadTest()
@@ -96,18 +103,6 @@ Sed cursus neque in semper maximus. Integer condimentum erat vel porttitor maxim
                         buf.Write(TXT);
                     }
                 }
-                //using (var ie = fl.Replay(tx))
-                //{
-                //    while (ie.MoveNext().Result)
-                //    {
-                //        using (var tr = new StreamReader(ie.Stream))
-                //        {
-                //            var tmp = tr.ReadToEnd();
-                //            Debug.Assert(tmp == TXT);
-                //        }
-                //    }
-                //    tx = ie.Transaction;
-                //}
             }
         }
 

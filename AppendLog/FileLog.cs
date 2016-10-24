@@ -53,7 +53,7 @@ namespace AppendLog
         public static async Task<FileLog> Create(string path)
         {
             if (path == null) throw new ArgumentNullException("path");
-            path = Path.GetFullPath(path);
+            path = string.Intern(Path.GetFullPath(path));
             // check the file's version number if file exists, else write it out
             long next;
             var header = new FileStream(path, FileMode.OpenOrCreate, FileAccess.ReadWrite, FileShare.ReadWrite);
@@ -105,6 +105,8 @@ namespace AppendLog
         /// <returns>A sequence of transactions since the given event.</returns>
         public IEventEnumerator Replay(TransactionId last)
         {
+            if (!ReferenceEquals(path, last.Path))
+                throw new ArgumentException("last", "The given transaction is not for this log");
             return new EventEnumerator(this, last);
         }
 
@@ -122,7 +124,7 @@ namespace AppendLog
         {
             Monitor.Enter(writer);
             tx = new TransactionId(next, path);
-            output = new BoundedStream(this, writer, next + EHDR_SIZE, int.MaxValue);
+            output = new BoundedStream(this, writer, next, int.MaxValue);
             return new Appender(this);
         }
 
@@ -160,12 +162,12 @@ namespace AppendLog
                     var length = (int)(x.Length - log.next);
                     if (length > 0)
                     {
-                        x.Seek(log.next, SeekOrigin.Begin);
+                        if (x.Length != x.Position)
+                            x.Seek(log.next + length, SeekOrigin.Begin);
                         buf.Write(length, 0);
                         x.Write(buf, 0, EHDR_SIZE);
-                        x.Seek(log.next + length, SeekOrigin.Begin);
                         x.Flush();
-                        log.next += length;
+                        log.next += length + EHDR_SIZE;
                         buf.Write(log.next);
                         header.Seek(LHDR_SIZE, SeekOrigin.Begin);
                         header.Write(buf, 0, sizeof(long));
@@ -181,7 +183,8 @@ namespace AppendLog
             FileLog log;
             long length;
             FileStream file;
-            byte[] buf;
+            byte[] buf = new byte[EHDR_SIZE];
+            Stack<int> lengths = new Stack<int>();
             public TransactionId Transaction { get; internal set; }
             public Stream Stream { get; internal set; }
 
@@ -196,20 +199,17 @@ namespace AppendLog
                 this.file = new FileStream(log.path, FileMode.Open, FileAccess.Read, FileShare.ReadWrite, 4096, true);
                 this.length = last.Id;
                 this.Transaction = default(TransactionId);
-                this.buf = new byte[EHDR_SIZE];
             }
 
             public async Task<bool> MoveNext()
             {
                 if (log == null) throw new ObjectDisposedException("IEventEnumerator");
                 var txid = Transaction.Id + length;
-                if (txid == log.next)
+                if (txid == log.next || lengths.Count == 0 && await NoPreviousEntries(txid, log.next))
                     return false;
-                file.Seek(txid, SeekOrigin.Begin);
-                await file.ReadAsync(buf, 0, EHDR_SIZE);
-                length = buf.ReadInt32(0);
+                length = lengths.Peek() + EHDR_SIZE;
                 Transaction = new TransactionId(txid, log.path);
-                Stream = new BoundedStream(log, file, txid + EHDR_SIZE, (int)length - EHDR_SIZE);
+                Stream = new BoundedStream(log, file, txid, (int)length - EHDR_SIZE);
                 return true;
             }
 
@@ -217,6 +217,19 @@ namespace AppendLog
             {
                 var x = Interlocked.Exchange(ref log, null);
                 if (x != null) file.Dispose();
+            }
+
+            async Task<bool> NoPreviousEntries(long last, long next)
+            {
+                while (last != next)
+                {
+                    file.Seek(next - EHDR_SIZE, SeekOrigin.Begin);
+                    await file.ReadAsync(buf, 0, EHDR_SIZE);
+                    var x = buf.ReadInt32();
+                    lengths.Push(x);
+                    next -= x + EHDR_SIZE;
+                }
+                return lengths.Count == 0;
             }
         }
 
