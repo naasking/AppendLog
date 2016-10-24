@@ -6,9 +6,7 @@ using System.Collections.Generic;
 using System.Linq;
 using System.Text;
 using System.IO;
-using System.IO.MemoryMappedFiles;
 using System.Diagnostics;
-using System.Runtime.Remoting;
 
 namespace AppendLog
 {
@@ -32,14 +30,15 @@ namespace AppendLog
 
         // current log file version number
         internal static readonly Version VERSION = new Version(0, 0, 0, 1);
-        // The size of an entry header.
+        // The size of an entry header block.
         internal const int EHDR_SIZE = sizeof(int);
-        // The size of the log file header which consists of Int64 version # followed by the last committed transaction id.
-        internal const int LHDR_SIZE = 4 + 4 + 4; // major + minor + rev
-        //internal const long LHDR_SIZE = 16 + 4 + 4 + 4; // Guid + major + minor + rev
-        // The size of the log file header which consists of Int64 version # followed by the last committed transaction id.
-        internal const int TXID_POS = LHDR_SIZE + sizeof(long);
-
+        // The size of the log file header which consists of 3 * Int32 for the version #.
+        internal const int LHDR_MAJOR = 0;  // offset of major vers#
+        internal const int LHDR_MINOR = 4;  // offset of minor vers#
+        internal const int LHDR_REV   = 8;  // offset of revision vers#
+        internal const int LHDR_SIZE = 1024; // major + minor + rev + padding(6) + txid[62]
+        internal const int LHDR_TX = 16;    // the start of the tx buffer
+        
         ~FileLog()
         {
             Dispose();
@@ -58,25 +57,25 @@ namespace AppendLog
             long next;
             var header = new FileStream(path, FileMode.OpenOrCreate, FileAccess.ReadWrite, FileShare.ReadWrite);
             var writer = new FileStream(path, FileMode.OpenOrCreate, FileAccess.ReadWrite, FileShare.ReadWrite, 4096, true);
-            var buf = new byte[TXID_POS];
+            var buf = new byte[LHDR_SIZE];
             Version vers;
-            if (header.Length < TXID_POS)
+            if (header.Length < LHDR_SIZE)
             {
-                next = TXID_POS;
+                next = LHDR_SIZE;
                 vers = VERSION;
-                buf.Write(vers.Major, 0);
-                buf.Write(vers.Minor, 4);
-                buf.Write(vers.Revision, 8);
-                buf.Write(next, 12);
-                await header.WriteAsync(buf, 0, TXID_POS);
+                buf.Write(vers.Major, LHDR_MAJOR);
+                buf.Write(vers.Minor, LHDR_MINOR);
+                buf.Write(vers.Revision, LHDR_REV);
+                buf.Write(next, LHDR_TX);
+                await header.WriteAsync(buf, 0, LHDR_SIZE);
                 await header.FlushAsync();
             }
             else
             {
-                await header.ReadAsync(buf, 0, TXID_POS);
-                var major = buf.ReadInt32(0);
-                var minor = buf.ReadInt32(4);
-                var rev = buf.ReadInt32(8);
+                await header.ReadAsync(buf, 0, LHDR_SIZE);
+                var major = buf.ReadInt32(LHDR_MAJOR);
+                var minor = buf.ReadInt32(LHDR_MINOR);
+                var rev = buf.ReadInt32(LHDR_REV);
                 vers = new Version(major, minor, 0, rev);
                 if (vers != VERSION)
                 {
@@ -84,9 +83,8 @@ namespace AppendLog
                     writer.Dispose();
                     throw new NotSupportedException(string.Format("File log expects version {0} but found version {1}", VERSION, vers));
                 }
-                next = buf.ReadInt32(12);
+                next = buf.ReadInt32(LHDR_TX);
             }
-            //var writer = new FileStream(path, FileMode.Open, FileAccess.ReadWrite, FileShare.ReadWrite, 4096, true);
             return new FileLog { path = path, next = next, header = header, writer = writer };
         }
 
@@ -95,7 +93,7 @@ namespace AppendLog
         /// </summary>
         public TransactionId First
         {
-            get { return new TransactionId(TXID_POS, path); }
+            get { return new TransactionId(LHDR_SIZE, path); }
         }
 
         /// <summary>
@@ -113,18 +111,18 @@ namespace AppendLog
         /// <summary>
         /// Atomically append data to the durable store.
         /// </summary>
-        /// <param name="async">True if the stream should support efficient asynchronous operations, false otherwise.</param>
+        /// <param name="transaction">The transaction being written.</param>
         /// <param name="transaction">The transaction being written.</param>
         /// <returns>A stream for writing.</returns>
         /// <remarks>
         /// The <paramref name="async"/> parameter is largely optional, in that it's safe to simply
         /// provide 'false' and everything will still work.
         /// </remarks>
-        public IDisposable Append(out Stream output, out TransactionId tx)
+        public IDisposable Append(out Stream output, out TransactionId transaction)
         {
             Monitor.Enter(writer);
-            tx = new TransactionId(next, path);
-            output = new BoundedStream(this, writer, next, int.MaxValue);
+            transaction = new TransactionId(next, path);
+            output = new BoundedStream(writer, next, int.MaxValue);
             return new Appender(this);
         }
 
@@ -137,6 +135,7 @@ namespace AppendLog
             {
                 x.Close();
                 writer.Close();
+                GC.SuppressFinalize(this);
             }
         }
 
@@ -175,8 +174,10 @@ namespace AppendLog
                         //log entry pointers -- this amortizes header seek costs to 1 per X entries. On open, we
                         //simply find the largest entry in this buffer that is well-formed. Well-formedness
                         //means that the EHDR value exactly equals the pointer of the *previous* entry in the
-                        //header buffer.
-                        header.Seek(LHDR_SIZE, SeekOrigin.Begin);
+                        //header buffer. When free entries are exhausted, header stream wraps around/gets reset
+                        //to the start of the buffer.
+                        if (header.Position == LHDR_SIZE)
+                            header.Seek(LHDR_TX, SeekOrigin.Begin);
                         header.Write(buf, 0, sizeof(long));
                         header.Flush();
                     }
@@ -191,6 +192,7 @@ namespace AppendLog
             long length;
             FileStream file;
             byte[] buf = new byte[EHDR_SIZE];
+            // stack of block lengths from known last position to end of file
             Stack<int> lengths = new Stack<int>();
             public TransactionId Transaction { get; internal set; }
             public Stream Stream { get; internal set; }
@@ -216,14 +218,18 @@ namespace AppendLog
                     return false;
                 length = lengths.Peek() + EHDR_SIZE;
                 Transaction = new TransactionId(txid, log.path);
-                Stream = new BoundedStream(log, file, txid, (int)length - EHDR_SIZE);
+                Stream = new BoundedStream(file, txid, (int)length - EHDR_SIZE);
                 return true;
             }
 
             public void Dispose()
             {
                 var x = Interlocked.Exchange(ref log, null);
-                if (x != null) file.Dispose();
+                if (x != null)
+                {
+                    file.Dispose();
+                    GC.SuppressFinalize(this);
+                }
             }
 
             async Task<bool> NoPreviousEntries(long last, long next)
@@ -238,157 +244,6 @@ namespace AppendLog
                 }
                 return lengths.Count == 0;
             }
-        }
-
-        /// <summary>
-        /// A file stream that updates the transaction identifiers embedded in a file upon close.
-        /// </summary>
-        /// <remarks>
-        /// This class ensures that only a single writer accesses the file at any one time. Since
-        /// it's append-only, we allow multiple readers to access the file; they are bounded above
-        /// by the file's internal transaction identifier.
-        /// 
-        /// The format of the log data is simply a sequence of records:
-        /// +---------------+---------------+
-        /// | length * byte | 32-bit length |
-        /// +---------------+---------------+
-        /// </remarks>
-        sealed class BoundedStream : Stream
-        {
-            long start;
-            int length;
-            FileStream underlying;
-            FileLog log;
-            
-            public BoundedStream(FileLog log, FileStream underlying, long start, int length)
-            {
-                this.log = log;
-                this.length = length;
-                this.underlying = underlying;
-                underlying.Position = this.start = start;
-            }
-
-            ~BoundedStream()
-            {
-                Dispose();
-            }
-
-            public override long Seek(long offset, SeekOrigin origin)
-            {
-                var pos = origin == SeekOrigin.Begin   ? start + offset:
-                          origin == SeekOrigin.Current ? Position + offset:
-                                                         Length + offset;
-                if (pos <= start) throw new ArgumentException("Cannot seek before the beginning of the log.", "offset");
-                if (pos > start + length) throw new ArgumentException("Cannot seek past the end of the log.", "offset");
-                return underlying.Seek(pos, SeekOrigin.Begin);
-            }
-
-            public override long Position
-            {
-                get { return underlying.Position - start; }
-                set { Seek(value, SeekOrigin.Begin); }
-            }
-
-            public override long Length
-            {
-                get { return Math.Min(length, Math.Max(0, underlying.Length - start)); }
-            }
-
-            public override void SetLength(long value)
-            {
-                if (length < 0) throw new ArgumentOutOfRangeException("value", "Attempted to set the value parameter to less than 0.");
-                underlying.SetLength(value + start);
-            }
-
-            public override IAsyncResult BeginRead(byte[] buffer, int offset, int count, AsyncCallback callback, object state)
-            {
-                return underlying.BeginRead(buffer, offset, Math.Min(count, (int)(length - Position)), callback, state);
-            }
-            public override IAsyncResult BeginWrite(byte[] buffer, int offset, int count, AsyncCallback callback, object state)
-            {
-                return underlying.BeginWrite(buffer, offset, Math.Min(count, (int)(length - Position)), callback, state);
-            }
-            public override int Read(byte[] buffer, int offset, int count)
-            {
-                return underlying.Read(buffer, offset, Math.Min(count, (int)(length - Position)));
-            }
-            public override Task<int> ReadAsync(byte[] buffer, int offset, int count, CancellationToken cancellationToken)
-            {
-                return underlying.ReadAsync(buffer, offset, Math.Min(count, (int)(length - Position)), cancellationToken);
-            }
-            public override void Write(byte[] buffer, int offset, int count)
-            {
-                underlying.Write(buffer, offset, Math.Min(count, (int)(length - Position)));
-            }
-            public override Task WriteAsync(byte[] buffer, int offset, int count, CancellationToken cancellationToken)
-            {
-                return underlying.WriteAsync(buffer, offset, Math.Min(count, (int)(length - Position)), cancellationToken);
-            }
-
-            #region Delegated operations
-            public override bool CanRead
-            {
-                get { return underlying.CanRead; }
-            }
-            public override bool CanWrite
-            {
-                get { return underlying.CanWrite; }
-            }
-            public override bool CanSeek
-            {
-                get { return underlying.CanSeek; }
-            }
-            public override bool CanTimeout
-            {
-                get { return underlying.CanTimeout; }
-            }
-            public override Task CopyToAsync(Stream destination, int bufferSize, CancellationToken cancellationToken)
-            {
-                return underlying.CopyToAsync(destination, bufferSize, cancellationToken);
-            }
-            public override ObjRef CreateObjRef(Type requestedType)
-            {
-                return underlying.CreateObjRef(requestedType);
-            }
-            public override int EndRead(IAsyncResult asyncResult)
-            {
-                return base.EndRead(asyncResult);
-            }
-            public override void EndWrite(IAsyncResult asyncResult)
-            {
-                underlying.EndWrite(asyncResult);
-            }
-            public override void Flush()
-            {
-                underlying.Flush();
-            }
-            public override Task FlushAsync(CancellationToken cancellationToken)
-            {
-                return underlying.FlushAsync(cancellationToken);
-            }
-            public override object InitializeLifetimeService()
-            {
-                return underlying.InitializeLifetimeService();
-            }
-            public override int ReadByte()
-            {
-                return underlying.ReadByte();
-            }
-            public override int ReadTimeout
-            {
-                get { return underlying.ReadTimeout; }
-                set { underlying.ReadTimeout = value; }
-            }
-            public override void WriteByte(byte value)
-            {
-                underlying.WriteByte(value);
-            }
-            public override int WriteTimeout
-            {
-                get { return underlying.WriteTimeout; }
-                set { underlying.WriteTimeout = value; }
-            }
-            #endregion
         }
         #endregion
     }

@@ -53,10 +53,6 @@ namespace AppendLog
         /// </summary>
         /// <param name="transaction">The transaction being written.</param>
         /// <returns>A stream for appending to the log.</returns>
-        /// <remarks>
-        /// The <paramref name="async"/> parameter is largely optional, in that it's safe to simply
-        /// provide 'false' and everything should still work.
-        /// </remarks>
         IDisposable Append(out Stream output, out TransactionId transaction);
     }
     

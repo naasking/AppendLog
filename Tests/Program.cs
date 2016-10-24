@@ -21,12 +21,12 @@ Sed cursus neque in semper maximus. Integer condimentum erat vel porttitor maxim
 
         static void Main(string[] args)
         {
-            BasicTest();
+            //BasicTest();
             MultiThreadTest();
-            SingleTest();
+            //SingleTest();
         }
 
-        const int ITER = 1000;
+        const int ITER = 3000;
         static FileLog log;
         static byte[] tmpbuf;
 
@@ -36,16 +36,23 @@ Sed cursus neque in semper maximus. Integer condimentum erat vel porttitor maxim
             var path = Path.GetFullPath("test.db");
             try
             {
-                var buf = Encoding.ASCII.GetBytes(TXT);
-                clock.Start();
-                using (var file = File.OpenWrite(path))
+                tmpbuf = Encoding.ASCII.GetBytes(TXT);
+                using (var fs = File.OpenWrite(path))
                 {
+                    clock.Start();
+                    var file = new BoundedStream(fs, fs.Length, int.MaxValue);
                     for (int i = 0; i < 3 * ITER; ++i)
                     {
-                        file.Write(buf, 0, buf.Length);
+                        file.Write(tmpbuf, 0, tmpbuf.Length);
+                        file.Write(tmpbuf, 0, sizeof(int));
+                        file.Flush();
+                        file.Seek(0, SeekOrigin.Begin);
+                        file.Write(tmpbuf, 0, sizeof(int));
+                        file.Flush();
+                        file.Seek(0, SeekOrigin.End);
                     }
+                    clock.Stop();
                 }
-                clock.Stop();
                 var secs = clock.ElapsedMilliseconds / 1000.0;
                 Console.WriteLine("Single: {0:0} tx/sec", 3 * ITER / secs);
             }
@@ -63,27 +70,27 @@ Sed cursus neque in semper maximus. Integer condimentum erat vel porttitor maxim
             {
                 tmpbuf = Encoding.ASCII.GetBytes(TXT);
                 clock.Start();
-                var t0 = Task.Run(new Action(Run));
-                var t1 = Task.Run(new Action(Run));
+                //var t0 = Task.Run(new Action(Run));
+                //var t1 = Task.Run(new Action(Run));
                 Run();
-                t0.Wait();
-                t1.Wait();
+                //t0.Wait();
+                //t1.Wait();
                 clock.Stop();
-                var count = 0;
-                using (var ie = log.Replay(log.First))
-                {
-                    while (ie.MoveNext().Result)
-                    {
-                        using (var tr = new StreamReader(ie.Stream))
-                        {
-                            Debug.Assert(tr.ReadToEnd() == TXT);
-                            ++count;
-                        }
-                    }
-                }
+                //var count = 0;
+                //using (var ie = log.Replay(log.First))
+                //{
+                //    while (ie.MoveNext().Result)
+                //    {
+                //        using (var tr = new StreamReader(ie.Stream))
+                //        {
+                //            Debug.Assert(tr.ReadToEnd() == TXT);
+                //            ++count;
+                //        }
+                //    }
+                //}
                 var secs = clock.ElapsedMilliseconds / 1000.0;
                 Console.WriteLine("FileLog: {0:0} tx/sec", 3 * ITER / secs);
-                Debug.Assert(count == 3 * ITER);
+                //Debug.Assert(count == 3 * ITER);
             }
             finally
             {
@@ -95,16 +102,12 @@ Sed cursus neque in semper maximus. Integer condimentum erat vel porttitor maxim
         static void Run()
         {
             var tx = log.First;
-            for (int i = 0; i < ITER; ++i)
+            for (int i = 0; i < 3 * ITER; ++i)
             {
                 Stream output;
                 using (log.Append(out output, out tx))
                 {
                     output.Write(tmpbuf, 0, tmpbuf.Length);
-                    //using (var buf = new StreamWriter(output, Encoding.ASCII))
-                    //{
-                    //    buf.Write(TXT);
-                    //}
                 }
             }
         }
