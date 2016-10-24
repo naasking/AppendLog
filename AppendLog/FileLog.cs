@@ -162,13 +162,20 @@ namespace AppendLog
                     var length = (int)(x.Length - log.next);
                     if (length > 0)
                     {
+                        // ensure stream points to the end of the written block
                         if (x.Length != x.Position)
-                            x.Seek(log.next + length, SeekOrigin.Begin);
+                            x.Seek(0, SeekOrigin.End);
+                        // write the length into the EHDR block
                         buf.Write(length, 0);
                         x.Write(buf, 0, EHDR_SIZE);
                         x.Flush();
                         log.next += length + EHDR_SIZE;
                         buf.Write(log.next);
+                        //FIXME: Reserve a large block in the header that acts like a circular buffer for writing
+                        //log entry pointers -- this amortizes header seek costs to 1 per X entries. On open, we
+                        //simply find the largest entry in this buffer that is well-formed. Well-formedness
+                        //means that the EHDR value exactly equals the pointer of the *previous* entry in the
+                        //header buffer.
                         header.Seek(LHDR_SIZE, SeekOrigin.Begin);
                         header.Write(buf, 0, sizeof(long));
                         header.Flush();
@@ -243,7 +250,7 @@ namespace AppendLog
         /// 
         /// The format of the log data is simply a sequence of records:
         /// +---------------+---------------+
-        /// | 32-bit length | length * byte |
+        /// | length * byte | 32-bit length |
         /// +---------------+---------------+
         /// </remarks>
         sealed class BoundedStream : Stream
