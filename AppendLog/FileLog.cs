@@ -15,20 +15,11 @@ namespace AppendLog
     /// </summary>
     public sealed class FileLog : IAppendLog
     {
-        //FIXME: use 128 bit transaction ids, and store the "base" offset at the beginning of the db file.
-
-        //FIXME: implement file rollover for compaction purposes, ie. can delete old entries by starting to
-        //write to a different file than the one we're reading from, initialized with a new base offset. We
-        //can then either copy the entries starting at the new base into the new file, or change the read
-        //logic to also open the new file when it's done with the read file. The latter is preferable.
         string path;
         long next;
-        FileStream header;
         FileStream writer;
         byte[] buf = new byte[sizeof(long)];
-
-        //FIXME: creating FileStreams is expensive, so perhaps have a BoundedStream pool for readers?
-
+        
         // current log file version number
         internal static readonly Version VERSION = new Version(0, 0, 0, 1);
         // The size of an entry header block.
@@ -57,11 +48,10 @@ namespace AppendLog
             path = string.Intern(Path.GetFullPath(path));
             // check the file's version number if file exists, else write it out
             long next;
-            var header = new FileStream(path, FileMode.OpenOrCreate, FileAccess.ReadWrite, FileShare.ReadWrite, LHDR_SIZE, useAsync);
-            var writer = new FileStream(path, FileMode.OpenOrCreate, FileAccess.ReadWrite, FileShare.ReadWrite, 4096, useAsync);
+            var writer = new FileStream(path, FileMode.OpenOrCreate, FileAccess.ReadWrite, FileShare.Read, 4096, useAsync);
             var buf = new byte[LHDR_SIZE];
             Version vers;
-            if (header.Length < LHDR_SIZE)
+            if (writer.Length < LHDR_SIZE)
             {
                 next = LHDR_SIZE;
                 vers = VERSION;
@@ -69,25 +59,24 @@ namespace AppendLog
                 buf.Write(vers.Minor, LHDR_MINOR);
                 buf.Write(vers.Revision, LHDR_REV);
                 buf.Write(next, LHDR_TX);
-                await header.WriteAsync(buf, 0, LHDR_SIZE);
-                await header.FlushAsync();
+                await writer.WriteAsync(buf, 0, LHDR_SIZE);
+                await writer.FlushAsync();
             }
             else
             {
-                await header.ReadAsync(buf, 0, LHDR_SIZE);
+                await writer.ReadAsync(buf, 0, LHDR_SIZE);
                 var major = buf.ReadInt32(LHDR_MAJOR);
                 var minor = buf.ReadInt32(LHDR_MINOR);
                 var rev = buf.ReadInt32(LHDR_REV);
                 vers = new Version(major, minor, 0, rev);
                 if (vers != VERSION)
                 {
-                    header.Dispose();
                     writer.Dispose();
                     throw new NotSupportedException(string.Format("File log expects version {0} but found version {1}", VERSION, vers));
                 }
                 next = buf.ReadInt32(LHDR_TX);
             }
-            return new FileLog { path = path, next = next, header = header, writer = writer };
+            return new FileLog { path = path, next = next, writer = writer };
         }
 
         /// <summary>
@@ -124,6 +113,7 @@ namespace AppendLog
         {
             Monitor.Enter(writer);
             transaction = new TransactionId(next, path);
+            writer.Seek(next, SeekOrigin.Begin);
             output = new BoundedStream(writer, next, int.MaxValue);
             return new Appender(this) { buf = buf };
         }
@@ -138,11 +128,11 @@ namespace AppendLog
         {
             // we could track outstanding write stream and dispose of it, but there's nothing
             // dangerous or incorrect about letting writers finish in their own time
-            var x = Interlocked.Exchange(ref header, null);
+            var x = Interlocked.Exchange(ref writer, null);
             if (x != null)
             {
                 x.Close();
-                writer.Close();
+                //writer.Close();
                 GC.SuppressFinalize(this);
             }
         }
@@ -152,13 +142,11 @@ namespace AppendLog
         {
             internal FileStream writer;
             internal FileLog log;
-            internal FileStream header;
             internal byte[] buf;
             public Appender(FileLog log)
             {
                 this.log = log;
                 this.writer = log.writer;
-                this.header = log.header;
                 //this.buf = new byte[sizeof(long)];
             }
             ~Appender()
@@ -176,22 +164,16 @@ namespace AppendLog
                         // ensure stream points to the end of the written block
                         if (x.Length != x.Position)
                             x.Seek(0, SeekOrigin.End);
-                        // write the length into the EHDR block
+                        // write the entry length into the EHDR block
                         buf.Write(length, 0);
                         x.Write(buf, 0, EHDR_SIZE);
                         x.Flush();
                         log.next += length + EHDR_SIZE;
                         buf.Write(log.next);
-                        //FIXME: Reserve a large block in the header that acts like a circular buffer for writing
-                        //log entry pointers -- this amortizes header seek costs to 1 per X entries. On open, we
-                        //simply find the largest entry in this buffer that is well-formed. Well-formedness
-                        //means that the EHDR value exactly equals the pointer of the *previous* entry in the
-                        //header buffer. When free entries are exhausted, header stream wraps around/gets reset
-                        //to the start of the buffer.
-                        if (header.Position == LHDR_SIZE)
-                            header.Seek(LHDR_TX, SeekOrigin.Begin);
-                        header.Write(buf, 0, sizeof(long));
-                        header.Flush();
+                        // write out the new entry to the header
+                        x.Seek(LHDR_TX, SeekOrigin.Begin);
+                        x.Write(buf, 0, sizeof(long));
+                        x.Flush();
                     }
                     Monitor.Exit(x);
                     GC.SuppressFinalize(this);
