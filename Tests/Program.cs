@@ -7,6 +7,7 @@ using System.Text;
 using System.Diagnostics;
 using AppendLog;
 using AppendLog.Internals;
+using System.Numerics;
 
 namespace Tests
 {
@@ -25,6 +26,7 @@ Sed cursus neque in semper maximus. Integer condimentum erat vel porttitor maxim
             TestLogHeader();
             TestBlockHeader();
             TestBlockMath();
+            TestPos();
             //BasicTest();
             //MultiThreadTest(FileLog.Create("multi.db").Result);
             //MultiThreadTest(MappedLog.Create("multi.db").Result);
@@ -207,6 +209,27 @@ Sed cursus neque in semper maximus. Integer condimentum erat vel porttitor maxim
             Debug.Assert(pos + BlockHeader.BlockSize == BlockHeader.Current(rand));
             Debug.Assert(pos + BlockHeader.BlockSize == BlockHeader.Current(rand + 12));
             Debug.Assert(pos + 2 * BlockHeader.BlockSize == BlockHeader.Current(rand + BlockHeader.BlockSize));
+        }
+
+        static void TestPos()
+        {
+            var rand = new Random(unchecked((int)DateTime.Now.Ticks));
+            var buf = new byte[8];
+            var start = 512L;
+            for (int i = 0; i < 1000000; ++i)
+            {
+                var rpos = Math.Abs(BitConverter.DoubleToInt64Bits(rand.NextDouble())) / 2;
+                var apos = BlockHeader.ToAbsolute(start, rpos);
+                Debug.Assert(rpos == BlockHeader.ToRelative(start, apos));
+            }
+            //for (int i = 0; i < 100; ++i)
+            //{
+            //    long apos;
+            //    do apos = Math.Abs(BitConverter.DoubleToInt64Bits(rand.NextDouble())) / 2;
+            //    while (apos < start);
+            //    var rpos = BlockHeader.ToRelative(start, apos);
+            //    Debug.Assert(apos == BlockHeader.ToAbsolute(start, rpos));
+            //}
         }
     }
 }

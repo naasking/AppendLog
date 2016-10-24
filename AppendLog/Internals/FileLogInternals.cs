@@ -29,8 +29,20 @@ namespace AppendLog.Internals
     /// </summary>
     public struct BlockHeader
     {
+        /// <summary>
+        /// Construct a block header.
+        /// </summary>
+        /// <param name="id"></param>
+        /// <param name="path"></param>
+        /// <param name="txid"></param>
+        /// <param name="count"></param>
+        /// <param name="type"></param>
         public BlockHeader(Guid id, string path, long txid, short count, BlockType type)
         {
+            Contract.Requires(!string.IsNullOrEmpty(path));
+            Contract.Requires(count >= 0);
+            Contract.Requires(txid > 0);
+            Contract.Requires(Enum.IsDefined(typeof(BlockType), type));
             Id = id;
             Transaction = new TransactionId(txid, path);
             Count = count;
@@ -46,10 +58,12 @@ namespace AppendLog.Internals
         public BlockHeader(string path, byte[] buf, int i)
         {
             Contract.Requires(buf != null);
-            Contract.Requires(path != null);
+            Contract.Requires(!string.IsNullOrEmpty(path));
             Contract.Requires(0 <= i && i + Size < buf.Length);
             Id = buf.GetGuid(i);
-            Transaction = new TransactionId(buf.GetInt64(i + 16), path);
+            var txid = buf.GetInt64(i + 16);
+            if (txid <= 0) throw new ArgumentException("Invalid TransactionId: " + txid.ToString("X"));
+            Transaction = new TransactionId(txid, path);
             var masked = buf.GetUInt16(i + 16 + 8);
             Type = (BlockType)(masked >> 15);
             Count = unchecked((short)(masked & 0x7F));
@@ -84,7 +98,8 @@ namespace AppendLog.Internals
         public void CopyTo(byte[] buf, int i)
         {
             Contract.Requires(buf != null);
-            Contract.Requires(0 <= i && i + Size < buf.Length);
+            Contract.Requires(0 <= i);
+            Contract.Requires(i + Size < buf.Length);
             Id.CopyTo(buf, i);
             Transaction.Id.CopyTo(buf, i + 16);
             var masked = unchecked((ushort)((ushort)Count | ((ushort)Type) << 15));
@@ -94,31 +109,64 @@ namespace AppendLog.Internals
         /// <summary>
         /// Compute the position of the last header relative to the given position.
         /// </summary>
-        /// <param name="pos"></param>
+        /// <param name="apos">Absolute position.</param>
         /// <returns></returns>
-        public static long Last(long pos)
+        [Pure]
+        public static long Last(long apos)
         {
-            return BlockSize * (1 + pos / BlockMask) - Size;
+            Contract.Requires(apos >= BlockSize);
+            Contract.Ensures(Contract.Result<long>() >= apos);
+            return apos + BlockSize * (apos / (BlockSize - Size)) - Size;
         }
 
         /// <summary>
         /// Compute the position of the current/upcoming header relative to the given position.
         /// </summary>
-        /// <param name="pos"></param>
+        /// <param name="apos">Absolute position.</param>
         /// <returns></returns>
-        public static long Current(long pos)
+        [Pure]
+        public static long Current(long apos)
         {
-            return BlockSize * (2 + pos / BlockMask) - Size;
+            Contract.Requires(apos >= BlockSize);
+            Contract.Ensures(Contract.Result<long>() >= apos);
+            Contract.Ensures(Contract.Result<long>() > Last(apos));
+            return Last(apos) + BlockSize;
         }
 
         /// <summary>
-        /// The offset the block headers add to the current position.
+        /// Translate a relative offset to an absolute offset.
         /// </summary>
-        /// <param name="pos"></param>
-        /// <returns></returns>
-        public static long Offset(long pos)
+        /// <param name="start">The base address.</param>
+        /// <param name="rpos">The relative stream position.</param>
+        /// <returns>The absolute stream position, accounting for block headers.</returns>
+        [Pure]
+        public static long ToAbsolute(long start, long rpos)
         {
-            return Size * pos / BlockSize;
+            Contract.Requires(start >= 0);
+            Contract.Requires(rpos >= 0);
+            Contract.Ensures(Contract.Result<long>() >= rpos);
+            Contract.Ensures(Contract.Result<long>() >= start);
+            Contract.Ensures(rpos == ToRelative(start, Contract.Result<long>()));
+            //Contract.Assume(rpos == ToRelative(start, start + rpos + Size * rpos / (BlockSize - Size)));
+            return start + rpos + Size * (rpos / (BlockSize - Size));
+        }
+
+        /// <summary>
+        /// Translate an absolute offset to a relative offset.
+        /// </summary>
+        /// <param name="start">The base address.</param>
+        /// <param name="apos">The absolute stream position.</param>
+        /// <returns>The absolute stream position, accounting for block headers.</returns>
+        [Pure]
+        public static long ToRelative(long start, long apos)
+        {
+            Contract.Requires(start >= 0);
+            Contract.Requires(apos >= start);
+            Contract.Ensures(Contract.Result<long>() <= apos);
+            Contract.Ensures(Contract.Result<long>() >= 0);
+            //Contract.Ensures(apos == ToAbsolute(start, Contract.Result<long>()));
+            //Contract.Assume(0 <= apos - start - Size * apos / BlockSize);
+            return apos - start - Size * ((apos - start) / BlockSize);
         }
 
         /// <summary>
@@ -139,7 +187,7 @@ namespace AppendLog.Internals
     public struct LogHeader
     {
         /// <summary>
-        /// Initialize the log hedaer.
+        /// Initialize the log header.
         /// </summary>
         /// <param name="version"></param>
         /// <param name="id"></param>
@@ -158,7 +206,12 @@ namespace AppendLog.Internals
         {
             Contract.Requires(buf != null);
             Contract.Requires(0 <= i && i + Size < buf.Length);
-            Version = new Version(buf.GetInt32(i), buf.GetInt32(i + 4), 0, buf.GetInt32(i + 8));
+            var major = buf.GetInt32(i);
+            var minor = buf.GetInt32(i + 4);
+            var rev = buf.GetInt32(i + 8);
+            if (major < 0 || minor < 0 || rev < 0)
+                throw new ArgumentException(string.Format("Invalid version number {0}.{1}.{2}", major, minor, rev));
+            Version = new Version(major, minor, 0, rev);
             Id = buf.GetGuid(i + 12);
         }
 
@@ -180,7 +233,7 @@ namespace AppendLog.Internals
         public void CopyTo(byte[] buf, int i)
         {
             Contract.Requires(buf != null);
-            Contract.Requires(0 <= i && i + 27 < buf.Length);
+            Contract.Requires(0 <= i && i + Size < buf.Length);
             Version.Major.CopyTo(buf, i);
             Version.Minor.CopyTo(buf, i + 4);
             Version.Revision.CopyTo(buf, i + 8);

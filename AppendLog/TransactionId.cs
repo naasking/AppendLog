@@ -4,6 +4,7 @@ using System.Linq;
 using System.Text;
 using System.Threading.Tasks;
 using System.Runtime.Serialization;
+using System.Diagnostics.Contracts;
 
 namespace AppendLog
 {
@@ -18,8 +19,10 @@ namespace AppendLog
 
         internal TransactionId(long id, string path)
         {
+            Contract.Requires(id > 0);
+            Contract.Requires(!string.IsNullOrEmpty(path));
             this.id = Math.Max(id, FileLog.LHDR_SIZE);
-            this.path = path;
+            this.path = string.Intern(path);
         }
 
         /// <summary>
@@ -101,8 +104,12 @@ namespace AppendLog
         #region Serialization interface
         TransactionId(SerializationInfo info, StreamingContext context)
         {
+            Contract.Requires(info != null);
             id = info.GetInt64(nameof(id));
-            path = string.Intern(System.IO.Path.GetFullPath(info.GetString(nameof(path))));
+            if (id <= 0) throw new ArgumentException("id");
+            var name = info.GetString(nameof(path));
+            if (string.IsNullOrEmpty(name)) throw new ArgumentException("path");
+            path = string.Intern(System.IO.Path.GetFullPath(name));
         }
 
         void ISerializable.GetObjectData(SerializationInfo info, StreamingContext context)

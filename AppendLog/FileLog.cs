@@ -36,13 +36,14 @@ namespace AppendLog
     /// </remarks>
     public sealed class FileLog : IAppendLog
     {
-        string path;
+        readonly string path;
         FileStream writer;
         long next;
-        byte[] buf;
-        LogHeader header;
+        readonly byte[] buf;
+        readonly LogHeader header;
 
-        //FIXME: creating FileStreams is expensive, so perhaps keep a pool of BoundedStreams for readers?
+        //FIXME: creating FileStreams is expensive, so perhaps keep a pool of BoundedStreams for readers? OR
+        //replace file readers with a single memory mapped file with RO-view streams
 
         //FIXME: format also supports arbitrary concurrent writers by extending the block header with
         //a 64-bit txid designating the first block. Each writer then obtains the next free block to
@@ -59,7 +60,7 @@ namespace AppendLog
         //Another problem is that we have to leave the file open for writing by other processes, so
         //we'd have to use FileStream.Lock to exclude other writers (which may be expensive), or we'd
         //need a lockfile for the database to ensure only the current process can write to it.
-        
+
         // The size of an entry header.
         internal const int EHDR_SIZE = sizeof(int);
         // The size of the log file header which consists of Int64 version # followed by the last committed transaction id.
@@ -71,8 +72,14 @@ namespace AppendLog
 
         FileLog(string path, LogHeader header, FileStream writer, long next, byte[] buf)
         {
-            Contract.Ensures(this.writer != null);
-            Contract.Ensures(this.buf != null);
+            Contract.Requires(buf != null);
+            Contract.Requires(next > 0);
+            Contract.Requires(!string.IsNullOrEmpty(path));
+            Contract.Requires(writer != null);
+            Contract.Requires(buf.Length >= BlockHeader.Size);
+            Contract.Requires(next <= writer.Length);
+            //Contract.Ensures(this.writer != null);
+            //Contract.Ensures(this.buf != null);
             this.path = path;
             this.header = header;
             this.writer = writer;
@@ -112,15 +119,28 @@ namespace AppendLog
                     throw new NotSupportedException(
                         string.Format("File log expects version {0} but found version {1}", VERSION, header.Version));
                 }
-                await LastBlock(path, fs, buf, header.Id);
+                next = await LastBlock(path, fs, buf, header.Id);
                 fs.SetLength(next = fs.Position); // eliminate incomplete transactions
             }
             return new FileLog(path, header, fs, next, buf);
         }
 
-        // find the last completed transaction
-        static async Task LastBlock(string path, FileStream fs, byte[] buf, Guid header)
+        [ContractInvariantMethod]
+        void Invariants()
         {
+            Contract.Invariant(buf.Length >= BlockHeader.Size);
+            Contract.Invariant(next > 0);
+            Contract.Invariant(writer == null || next <= writer.Length);
+            Contract.Invariant(!string.IsNullOrEmpty(path));
+        }
+
+        // find the last completed transaction
+        static async Task<long> LastBlock(string path, FileStream fs, byte[] buf, Guid header)
+        {
+            Contract.Requires(buf != null);
+            Contract.Requires(path != null);
+            Contract.Requires(fs != null);
+            Contract.Ensures(Contract.Result<long>() > 0);
             BlockHeader blk;
             var probe = BlockHeader.Last(fs.Length);
             do
@@ -132,7 +152,7 @@ namespace AppendLog
             } while (blk.Type != BlockType.Final);
             if (blk.Id != header)
                 throw new InvalidDataException(string.Format("Expected log GUID {0} but block {1:X} has a GUID {2}.", header, fs.Position - BlockHeader.Size, blk.Id));
-            return;
+            return fs.Position;
         }
 
         /// <summary>
@@ -152,6 +172,8 @@ namespace AppendLog
         {
             if (!ReferenceEquals(last.Path, path))
                 throw new ArgumentException(string.Format("The given TransactionId({0}) does not designate this log ({1}).", last, First), "last");
+            if (writer == null)
+                throw new ObjectDisposedException("The FileLog has been disposed.");
             return new EventEnumerator(this, last);
         }
 
@@ -169,10 +191,10 @@ namespace AppendLog
         {
             var x = writer;
             if (x == null) throw new ObjectDisposedException("FileLog has been disposed.");
-            Monitor.Enter(writer);
+            Monitor.Enter(x);
             if (writer == null) { Monitor.Exit(x); throw new ObjectDisposedException("FileLog has been disposed."); }
             tx = new TransactionId(next, path);
-            return new AtomicAppender(this, writer, next, buf);
+            return new BoundedStream(this, writer, next, buf);
         }
 
         public void Dispose()
@@ -186,9 +208,9 @@ namespace AppendLog
         #region Internals
         sealed class EventEnumerator : IEventEnumerator
         {
-            FileLog log;
+            readonly FileLog log;
             FileStream file;
-            byte[] buf;
+            readonly byte[] buf;
             long end;
             int length;
             public TransactionId Transaction { get; internal set; }
@@ -201,6 +223,9 @@ namespace AppendLog
 
             public EventEnumerator(FileLog slog, TransactionId last)
             {
+                Contract.Requires(slog != null);
+                Contract.Requires(slog.writer != null);
+                Contract.Requires(ReferenceEquals(slog.path, last.Path));
                 file = new FileStream(slog.path, FileMode.OpenOrCreate, FileAccess.Read, FileShare.ReadWrite);
                 log = slog;
                 buf = new byte[TXID_POS];
@@ -224,7 +249,7 @@ namespace AppendLog
                 Transaction = new TransactionId(file.Position, log.path);
                 await file.ReadAsync(buf, 0, EHDR_SIZE);
                 length = buf.GetInt32();
-                Stream = new BoundedStream(log, file.Position, length);
+                Stream = new BoundedStream2(log, file.Position, length);
                 file.Seek(length, SeekOrigin.Current);
                 return true;
             }
@@ -243,29 +268,40 @@ namespace AppendLog
         /// This class ensures that only a single writer accesses the file at any one time. Since
         /// it's append-only, we allow multiple readers to access the file; they are bounded above
         /// by the file's internal transaction identifier.
-        /// 
-        /// The format of the log data is simply a sequence of records:
-        // +--------+-----------+--------+-----------+
-        // | Data...|BlockHeader| Data...|BlockHeader| ...
-        // +--------+-----------+--------+-----------+
         /// </remarks>
-        sealed class AtomicAppender : Stream
+        sealed class BoundedStream : Stream
         {
-            long start;
-            byte[] buf;
-            FileStream file;
-            FileLog log;
+            readonly long start;
+            readonly byte[] buf;
+            readonly FileStream file;
+            readonly FileLog log;
 
             // open the file with exclusive write access and using a 4KB buffer
-            public AtomicAppender(FileLog log, FileStream file, long start, byte[] buf)
+            public BoundedStream(FileLog log, FileStream file, long start, byte[] buf)
             {
                 Contract.Requires(log != null);
                 Contract.Requires(file != null);
                 Contract.Requires(buf != null);
+                Contract.Requires(buf.Length >= BlockHeader.Size);
+                Contract.Requires(512 <= start);
+                Contract.Requires(start <= file.Length);
                 this.log = log;
                 this.buf = buf;
                 this.file = file;
                 file.Position = this.start = start;
+            }
+
+            [ContractInvariantMethod]
+            void Invariants()
+            {
+                Contract.Invariant(start >= 512);
+                Contract.Invariant(file != null);
+                Contract.Invariant(log != null);
+                Contract.Invariant(buf != null);
+                Contract.Invariant(buf.Length >= BlockHeader.Size);
+                Contract.Invariant(start <= file.Position);
+                Contract.Invariant(Position <= file.Position);
+                Contract.Invariant(start <= file.Length);
             }
 
             public override long Seek(long offset, SeekOrigin origin)
@@ -273,21 +309,21 @@ namespace AppendLog
                 var lpos = origin == SeekOrigin.Begin     ? offset:
                            origin == SeekOrigin.Current   ? file.Position + offset:
                                                             file.Length + offset;
-                var pos = lpos + BlockHeader.Offset(lpos);
+                var pos = BlockHeader.ToAbsolute(start, lpos);
                 if (pos <= start) throw new ArgumentException("Cannot seek before the beginning of the log.", "offset");
-                file.Seek(pos, SeekOrigin.Begin);
-                return pos;
+                pos = file.Seek(pos, SeekOrigin.Begin);
+                return BlockHeader.ToRelative(start, pos);
             }
 
             public override long Position
             {
-                get { return file.Position - start - BlockHeader.Offset(file.Position); }
+                get { return BlockHeader.ToRelative(start, file.Position); }
                 set { Seek(value, SeekOrigin.Begin); }
             }
 
             public override long Length
             {
-                get { return file.Length - start - BlockHeader.Offset(file.Length); }
+                get { return BlockHeader.ToRelative(start, file.Length); }
             }
             
             public override void SetLength(long value)
@@ -299,23 +335,33 @@ namespace AppendLog
             {
                 // if the current position is at the very beginning of a block, then we should rewind
                 // and overwrite the header block to finalize
-                file.Seek(file.Length, SeekOrigin.Begin);
-                if (file.Length % BlockHeader.BlockSize == 0)
-                    Seek(-BlockHeader.BlockSize, SeekOrigin.Current);
-                NextHeader(BlockType.Final);
-                file.Flush();
+                if (CanWrite)
+                {
+                    file.Seek(file.Length, SeekOrigin.Begin);
+                    if (file.Length % BlockHeader.BlockSize == 0)
+                        Seek(-BlockHeader.BlockSize, SeekOrigin.Current);
+                    NextHeader(BlockType.Final);
+                    file.Flush(true);
 
-                // update the cached 'next' txid, then release the lock on the underlying stream
-                Interlocked.Exchange(ref log.next, file.Position);
-                Monitor.Exit(file);
+                    // update the cached 'next' txid, then release the lock on the underlying stream
+                    Interlocked.Exchange(ref log.next, file.Position);
+                    Monitor.Exit(file);
+                }
                 base.Close();
+            }
+
+            short GetCount(BlockType type)
+            {
+                Contract.Requires(Enum.IsDefined(typeof(BlockType), type));
+                Contract.Ensures(Contract.Result<short>() >= 0);
+                return type == BlockType.Internal
+                     ? (short)((file.Position - start) / BlockHeader.BlockSize)
+                     : (short)(file.Position - BlockHeader.Last(file.Position) + BlockHeader.BlockSize);
             }
 
             async Task WriteBlockHeaderAsync(BlockType type)
             {
-                var count = type == BlockType.Internal
-                          ? (short)((file.Position - start) / BlockHeader.BlockSize)
-                          : (short)(file.Position - BlockHeader.Last(file.Position) + BlockHeader.BlockSize);
+                var count = GetCount(type);
                 var hdr = new BlockHeader(log.header.Id, log.path, start, count, type);
                 hdr.CopyTo(buf, 0);
                 await file.WriteAsync(buf, 0, BlockHeader.Size);
@@ -323,9 +369,7 @@ namespace AppendLog
 
             void WriteBlockHeader(BlockType type)
             {
-                var count = type == BlockType.Internal
-                          ? (short)((file.Position - start) / BlockHeader.BlockSize)
-                          : (short)(file.Position - BlockHeader.Last(file.Position) + BlockHeader.BlockSize);
+                var count = GetCount(type);
                 var hdr = new BlockHeader(log.header.Id, log.path, start, count, type);
                 hdr.CopyTo(buf, 0);
                 file.Write(buf, 0, BlockHeader.Size);
@@ -334,7 +378,7 @@ namespace AppendLog
             long NextHeader(BlockType? type = null)
             {
                 var hdr = BlockHeader.Current(file.Position);
-                Contract.Assert(hdr <= file.Position);
+                Contract.Assume(hdr <= file.Position);
                 if (hdr == file.Position)
                 {
                     if (type == null)
@@ -464,63 +508,75 @@ namespace AppendLog
         /// <summary>
         /// A file stream that's bounded.
         /// </summary>
-        sealed class BoundedStream : FileStream
+        sealed class BoundedStream2 : FileStream
         {
-            long start;
-            long end;
+            readonly long start;    // absolute start position
+            readonly int length;    // number of bytes in this substream
 
-            public BoundedStream(FileLog log, long start, int length)
+            public BoundedStream2(FileLog log, long start, int length)
                 : base(log.path, FileMode.Open, FileAccess.Read, FileShare.ReadWrite)
             {
+                Contract.Requires(log != null);
+                Contract.Requires(start > 0);
+                Contract.Requires(length > 0);
                 this.start = start;
-                this.end = start + length;
+                this.length = length;
                 base.Seek(start, SeekOrigin.Begin);
+            }
+
+            [ContractInvariantMethod]
+            void Invariants()
+            {
+                Contract.Invariant(start > 0);
+                Contract.Invariant(length > 0);
+                Contract.Invariant(start <= base.Position);
+                Contract.Invariant(Length >= Position);
             }
 
             public override long Seek(long offset, SeekOrigin origin)
             {
-                var newpos = origin == SeekOrigin.Begin   ? start + offset:
-                             origin == SeekOrigin.Current ? Position + offset:
-                                                            Length + offset;
-                if (newpos < start) throw new ArgumentException("Cannot seek before the beginning of the log.", "offset");
-                if (newpos >= end) throw new ArgumentException("Cannot seek past the end of the log.", "offset");
-                return base.Seek(offset, origin);
+                var rpos = origin == SeekOrigin.Begin   ? start + offset:
+                           origin == SeekOrigin.Current ? Position + offset:
+                                                          Length + offset;
+                if (rpos < start) throw new ArgumentException("Cannot seek before the beginning of the log.", "offset");
+                var apos = BlockHeader.ToAbsolute(start, rpos);
+                if (apos - start >= length) throw new ArgumentException("Cannot seek past the end of the log.", "offset");
+                apos = base.Seek(apos, SeekOrigin.Begin);
+                Contract.Assume(apos >= start);
+                return BlockHeader.ToRelative(start, apos);
             }
 
             public override long Position
             {
-                get { return base.Position; }
-                set
-                {
-                    if (value < start) throw new ArgumentException("Cannot seek before the end of the log.", "offset");
-                    if (value >= end) throw new ArgumentException("Cannot seek past the end of the log.", "offset");
-                    base.Position = value;
-                }
+                get { return BlockHeader.ToRelative(start, base.Position); }
+                set { Seek(value, SeekOrigin.Begin); }
             }
 
             public override long Length
             {
-                get { return end - start; }
+                get { return length; }
             }
 
             public override void SetLength(long value)
             {
-                base.SetLength(value + start);
+                base.SetLength(BlockHeader.ToAbsolute(start, value));
             }
 
             public override int Read(byte[] array, int offset, int count)
             {
-                return base.Read(array, offset, (int)Math.Min(end - Position, count));
+                //FIXME: need to read base in chunks
+                return base.Read(array, offset, (int)Math.Min(Length - Position, count));
             }
 
             public override IAsyncResult BeginRead(byte[] array, int offset, int numBytes, AsyncCallback userCallback, object stateObject)
             {
-                return base.BeginRead(array, offset, (int)Math.Min(end - Position, numBytes), userCallback, stateObject);
+                //FIXME: need to read base in chunks
+                return base.BeginRead(array, offset, (int)Math.Min(Length - Position, numBytes), userCallback, stateObject);
             }
 
             public override int ReadByte()
             {
-                if (Position >= end) throw new ArgumentException("Cannot seek past the end of the log.");
+                if (Position == Length) throw new ArgumentException("Cannot seek past the end of the log.");
                 return base.ReadByte();
             }
         }
