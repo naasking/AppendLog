@@ -21,7 +21,7 @@ writing to the log:
         /// Atomically append data to the durable store.
         /// </summary>
         /// <returns>A stream for writing.</returns>
-        Stream Append(out TransactionId tx);
+        IDisposable Append(out Stream output, out TransactionId tx);
 
         /// <summary>
         /// Enumerate the sequence of transactions since <paramref name="lastEvent"/>.
@@ -54,20 +54,21 @@ writing to the log:
     }
 
 Writing to the log involves simply calling `Append()`, which returns
-a bounded stream to which you can write. When you dispose the stream,
-the log is updated atomically with the new data. Only a single writer
-can call Append() at any given time, and this exclusion works across
-processes too.
+a bounded stream to which you can write, and a handle representing the
+transaction. When you dispose the handle, the output stream is checked
+for any data, and if data was written, then the log is atomically
+updated with that data. Only a single writer can call Append() at any
+given time.
 
 You can utilize any serialization API that uses the standard .NET
 System.IO.Stream abstractions to write to the output stream, so the
 actual content of the event log is entirely domain-specific. You
 could use JSON, XML, BinaryFormatter, or some mix of all of the above
-if you really wanted to.
+if desired.
 
 Each TransactionId is a marker for the beginning of an `Append()`
 event, which can be later used to replay the log's events.
-`TransactionId.First` defines the log's first transaction.
+`IAppendLog.First` defines the log's first transaction.
 
 The replay API provides a simple and efficient interface for reading
 log contents from a given marker. This is often used for log
@@ -77,16 +78,33 @@ event sourcing.
 # Status
 
 I believe the API to be complete and sufficient, but more testing is
-needed. The file format is still in flux until an official release.
+needed, particularly for BoundedStream. The simple file format is mostly
+settled for now.
+
+On an AMD FX-2120 with an SSD, I get ~80,000-100,000 writes/second,
+which corresponds roughly to the raw buffered I/O speed of FileStream.
+This is precisely what's expected given log append is just a thin
+wrapper around FileStream.
+
+Durable commits require flushing to disk after all writes are
+complete, which yields about ~800 tx/second due to two flushes. The
+first ensures that an appended entry is written to disk, the second
+ensures the log header is updated to point to the new entry.
 
 # Future Work
 
-I considered a memory-mapped implementation, but locking semantics
-across processes weren't clear, and the benchmarks I'd seen didn't
-convey much benefit to memory mapped files for this purpose.
-
-Streams are also quite ubiquitous, particularly for de/serialization
-APIs, so this approach was just a natural fit.
+ * The append handle is currently just an opaque IDisposable, which
+   breaks with the ubiquitous async API of IAppendLog. Perhaps define
+   a new async disposable interface.
+ * The single writer still needs to do a bit of seeking to write the
+   header at the log start, but there might be a disk format that
+   requires no seeking. For instance, a layout where the log file
+   consists of fixed-size chunks, so no matter the state of the Log
+   we know where the chunk headers are and we can find the chunk
+   corresponding to the last complete transaction by back tracking
+   from the position at the file's end.
+ * Concurrent writing via an IAppendLog wrapper around FileLog.
+ * Log replication via an IAppendLog implemented backed by Raft?
 
 # LICENSE
 
