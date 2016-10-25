@@ -18,7 +18,7 @@ namespace AppendLog
         string path;
         long next;
         FileStream writer;
-        byte[] buf = new byte[sizeof(long)];
+        byte[] writeBuffer = new byte[sizeof(long)];
         
         // current log file version number
         internal static readonly Version VERSION = new Version(0, 0, 0, 1);
@@ -46,7 +46,7 @@ namespace AppendLog
         {
             if (path == null) throw new ArgumentNullException("path");
             path = string.Intern(Path.GetFullPath(path));
-            // check the file's version number if file exists, else write it out
+            // check the file's version number if file exists, else write it out and initialize the log
             long next;
             var writer = new FileStream(path, FileMode.OpenOrCreate, FileAccess.ReadWrite, FileShare.Read, 4096, useAsync);
             var buf = new byte[LHDR_SIZE];
@@ -115,14 +115,14 @@ namespace AppendLog
             transaction = new TransactionId(next, path);
             writer.Seek(next, SeekOrigin.Begin);
             output = new BoundedStream(writer, next, int.MaxValue);
-            return new Appender(this) { buf = buf };
+            return new Appender(this) { buf = writeBuffer };
         }
 
-        [Conditional("DEBUG")]
-        public void Stats()
-        {
-            Console.WriteLine("FileLog ({0}): {1} bytes", Path.GetFileName(path), writer.Length);
-        }
+        //[Conditional("DEBUG")]
+        //public void Stats()
+        //{
+        //    Console.WriteLine("FileLog ({0}): {1} bytes", Path.GetFileName(path), writer.Length);
+        //}
 
         public void Dispose()
         {
@@ -132,7 +132,6 @@ namespace AppendLog
             if (x != null)
             {
                 x.Close();
-                //writer.Close();
                 GC.SuppressFinalize(this);
             }
         }
@@ -143,16 +142,18 @@ namespace AppendLog
             internal FileStream writer;
             internal FileLog log;
             internal byte[] buf;
+
             public Appender(FileLog log)
             {
                 this.log = log;
                 this.writer = log.writer;
-                //this.buf = new byte[sizeof(long)];
             }
+
             ~Appender()
             {
                 Dispose();
             }
+
             public void Dispose()
             {
                 var x = Interlocked.Exchange(ref writer, null);
@@ -170,10 +171,10 @@ namespace AppendLog
                         x.Flush();
                         log.next += length + EHDR_SIZE;
                         buf.Write(log.next);
-                        // write out the new entry to the header
+                        // write out position of new entry in the header
                         x.Seek(LHDR_TX, SeekOrigin.Begin);
                         x.Write(buf, 0, sizeof(long));
-                        x.Flush();
+                        x.Flush(true);
                     }
                     Monitor.Exit(x);
                     GC.SuppressFinalize(this);

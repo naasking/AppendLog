@@ -106,13 +106,13 @@ Sed cursus neque in semper maximus. Integer condimentum erat vel porttitor maxim
             {
                 tmpbuf = Encoding.ASCII.GetBytes(TXT);
                 clock.Start();
-                //var t0 = Task.Run(new Action(Run));
-                //var t1 = Task.Run(new Action(Run));
+                var t0 = Task.Run(new Action(Run));
+                var t1 = Task.Run(new Action(Run));
                 Run();
-                //t0.Wait();
-                //t1.Wait();
+                t0.Wait();
+                t1.Wait();
                 clock.Stop();
-                log.Stats();
+                //log.Stats();
                 var count = 0;
                 using (var ie = log.Replay(log.First))
                 {
@@ -138,7 +138,7 @@ Sed cursus neque in semper maximus. Integer condimentum erat vel porttitor maxim
         static void Run()
         {
             TransactionId tx;
-            for (int i = 0; i < 3 * ITER; ++i)
+            for (int i = 0; i < ITER; ++i)
             {
                 Stream output;
                 using (log.Append(out output, out tx))
