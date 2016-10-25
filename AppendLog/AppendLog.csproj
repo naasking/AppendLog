@@ -40,6 +40,7 @@
     <Reference Include="Microsoft.CSharp" />
   </ItemGroup>
   <ItemGroup>
+    <Compile Include="BoundedStream.cs" />
     <Compile Include="FileLog.cs" />
     <Compile Include="IAppendLog.cs" />
     <Compile Include="Properties\AssemblyInfo.cs" />

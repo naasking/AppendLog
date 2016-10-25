@@ -7,7 +7,6 @@ using System.Linq;
 using System.Text;
 using System.IO;
 using System.Diagnostics;
-using System.Runtime.Remoting;
 
 namespace AppendLog
 {
@@ -16,86 +15,68 @@ namespace AppendLog
     /// </summary>
     public sealed class FileLog : IAppendLog
     {
-        //FIXME: use 128 bit transaction ids, and store the "base" offset at the beginning of the db file.
-
-        //FIXME: implement file rollover for compaction purposes, ie. can delete old entries by starting to
-        //write to a different file than the one we're reading from, initialized with a new base offset. We
-        //can then either copy the entries starting at the new base into the new file, or change the read
-        //logic to also open the new file when it's done with the read file. The latter is preferable.
         string path;
-        FileStream writer;
         long next;
-        byte[] buf;
-
-        //FIXME: creating FileStreams is expensive, so perhaps have a BoundedStream pool for readers?
-
-        //FIXME: currently seek around too much which causes an order of magnitude slowdown. Change log
-        //format to literal append-only with fixed-size segments, so given any file length we can compute
-        //the last flushed segment and check for garbage. Segments are of two types, internal | complete.
-        //Complete segments terminate a full transaction, and consist of a sequence of internal
-        //segments. Last flused segment may be internal or complete. If complete, that's the last block
-        //of the last transaction. If internal, we step back until we hit the first complete segment,
-        //truncate the log file to that point. We need some sort of magic number for each segment
-        //header to verify whether the segment is garbage. Log file:
-        // +---------+---------+--------+------+------+--------+------+------+-----+
-        // | VERSION | MAGIC # | Data...|Length|MAGIC#| Data...|Length|MAGIC#| ... |
-        // +---------+---------+--------+------+------+--------+------+------+-----+
-        // Magic # should probably be a GUID or something.
-        //
-        // This also extends to arbitrary concurrent writers by extending the header block to include
-        // a 64-bit txid designating the first block. Each writer then obtains the next block# to
-        // write from log.GetNextBlock(), which does: Interlocked.Increment(ref blockno) >> 9
-        // to compute the next free block #.
-        //
-        // However, this now permits an inconsistent log file because some transactions may still be
-        // incomplete, consisting of only internal blocks occurring before the last completed tx. Is
-        // there some block reuse implementation? Perhaps upon opening the log file, it can find and
-        // enqueue each such block onto a list which is consulted before atomic increment.
-
+        FileStream writer;
+        byte[] writeBuffer = new byte[sizeof(long)];
+        
         // current log file version number
-        internal const long VERSION = 0x01;
-        // The size of an entry header.
+        internal static readonly Version VERSION = new Version(0, 0, 0, 1);
+        // The size of an entry header block.
         internal const int EHDR_SIZE = sizeof(int);
-        // The size of the log file header which consists of Int64 version # followed by the last committed transaction id.
-        internal const long LHDR_SIZE = sizeof(long) + sizeof(long);
-        // The size of the log file header which consists of Int64 version # followed by the last committed transaction id.
-        internal const int TXID_POS = sizeof(long);
+        // The size of the log file header which consists of 3 * Int32 for the version #.
+        internal const int LHDR_MAJOR = 0;  // offset of major vers#
+        internal const int LHDR_MINOR = 4;  // offset of minor vers#
+        internal const int LHDR_REV   = 8;  // offset of revision vers#
+        internal const int LHDR_SIZE = 24; // major + minor + rev + padding(6) + txid[62]
+        internal const int LHDR_TX = 16;    // the start of the tx buffer
+        
+        ~FileLog()
+        {
+            Dispose();
+        }
         
         /// <summary>
         /// An async FileLog constructor.
         /// </summary>
         /// <param name="path">The path to the log file.</param>
+        /// <param name="useAsync">Instruct the underlying IO subsystem to optimize for async I/O.</param>
         /// <returns>An <see cref="FileLog"/> instance.</returns>
-        public static async Task<FileLog> Create(string path)
+        public static async Task<FileLog> Create(string path, bool useAsync)
         {
             if (path == null) throw new ArgumentNullException("path");
             path = string.Intern(Path.GetFullPath(path));
-            // check the file's version number if file exists, else write it out
+            // check the file's version number if file exists, else write it out and initialize the log
             long next;
-            var fs = new FileStream(path, FileMode.OpenOrCreate, FileAccess.ReadWrite, FileShare.Read, 4096, true);
+            var writer = new FileStream(path, FileMode.OpenOrCreate, FileAccess.ReadWrite, FileShare.Read, 4096, useAsync);
             var buf = new byte[LHDR_SIZE];
-            if (fs.Length < LHDR_SIZE)
+            Version vers;
+            if (writer.Length < LHDR_SIZE)
             {
-                VERSION.WriteId(buf);
-                await fs.WriteAsync(buf, 0, TXID_POS);
-                LHDR_SIZE.WriteId(buf);
-                await fs.WriteAsync(buf, 0, TXID_POS);
-                await fs.FlushAsync();
                 next = LHDR_SIZE;
+                vers = VERSION;
+                buf.Write(vers.Major, LHDR_MAJOR);
+                buf.Write(vers.Minor, LHDR_MINOR);
+                buf.Write(vers.Revision, LHDR_REV);
+                buf.Write(next, LHDR_TX);
+                await writer.WriteAsync(buf, 0, LHDR_SIZE);
+                await writer.FlushAsync();
             }
             else
             {
-                await fs.ReadAsync(buf, 0, buf.Length);
-                var vers = buf.GetNextId();
+                await writer.ReadAsync(buf, 0, LHDR_SIZE);
+                var major = buf.ReadInt32(LHDR_MAJOR);
+                var minor = buf.ReadInt32(LHDR_MINOR);
+                var rev = buf.ReadInt32(LHDR_REV);
+                vers = new Version(major, minor, 0, rev);
                 if (vers != VERSION)
                 {
-                    fs.Dispose();
-                    throw new NotSupportedException(string.Format("File log expects version {0}.{1}.{2} but found version {3}.{4}.{5}",
-                        Major(VERSION), Minor(VERSION), Revision(VERSION), Major(vers), Minor(vers), Revision(vers)));
+                    writer.Dispose();
+                    throw new NotSupportedException(string.Format("File log expects version {0} but found version {1}", VERSION, vers));
                 }
-                next = buf.GetNextId(sizeof(long));
+                next = buf.ReadInt32(LHDR_TX);
             }
-            return new FileLog { path = path, next = next, writer = fs, buf = buf };
+            return new FileLog { path = path, next = next, writer = writer };
         }
 
         /// <summary>
@@ -113,47 +94,102 @@ namespace AppendLog
         /// <returns>A sequence of transactions since the given event.</returns>
         public IEventEnumerator Replay(TransactionId last)
         {
-            if (!ReferenceEquals(last.Path, path))
-                throw new ArgumentException(string.Format("The given TransactionId({0}) does not designate this log ({1}).", last, First), "last");
+            if (!ReferenceEquals(path, last.Path))
+                throw new ArgumentException("last", "The given transaction is not for this log");
             return new EventEnumerator(this, last);
         }
 
         /// <summary>
         /// Atomically append data to the durable store.
         /// </summary>
-        /// <param name="async">True if the stream should support efficient asynchronous operations, false otherwise.</param>
+        /// <param name="transaction">The transaction being written.</param>
         /// <param name="transaction">The transaction being written.</param>
         /// <returns>A stream for writing.</returns>
         /// <remarks>
         /// The <paramref name="async"/> parameter is largely optional, in that it's safe to simply
         /// provide 'false' and everything will still work.
         /// </remarks>
-        public Stream Append(out TransactionId tx)
+        public IDisposable Append(out Stream output, out TransactionId transaction)
         {
             Monitor.Enter(writer);
-            tx = new TransactionId(next, path);
-            return new AtomicAppender(this, writer, next, buf);
+            transaction = new TransactionId(next, path);
+            writer.Seek(next, SeekOrigin.Begin);
+            output = new BoundedStream(writer, next, int.MaxValue);
+            return new Appender(this) { buf = writeBuffer };
         }
+
+        //[Conditional("DEBUG")]
+        //public void Stats()
+        //{
+        //    Console.WriteLine("FileLog ({0}): {1} bytes", Path.GetFileName(path), writer.Length);
+        //}
 
         public void Dispose()
         {
             // we could track outstanding write stream and dispose of it, but there's nothing
             // dangerous or incorrect about letting writers finish in their own time
-            writer.Close();
+            var x = Interlocked.Exchange(ref writer, null);
+            if (x != null)
+            {
+                x.Close();
+                GC.SuppressFinalize(this);
+            }
         }
 
         #region Internals
-        static long Major(long x)    { return 0x1FFFFF & (x >> (64 - 21)); }
-        static long Minor(long x)    { return 0x1FFFFF & (x >> (64 - 42)); }
-        static long Revision(long x) { return 0x1FFFFF & x; }
+        sealed class Appender : IDisposable
+        {
+            internal FileStream writer;
+            internal FileLog log;
+            internal byte[] buf;
+
+            public Appender(FileLog log)
+            {
+                this.log = log;
+                this.writer = log.writer;
+            }
+
+            ~Appender()
+            {
+                Dispose();
+            }
+
+            public void Dispose()
+            {
+                var x = Interlocked.Exchange(ref writer, null);
+                if (x != null)
+                {
+                    var length = (int)(x.Length - log.next);
+                    if (length > 0)
+                    {
+                        // ensure stream points to the end of the written block
+                        if (x.Length != x.Position)
+                            x.Seek(0, SeekOrigin.End);
+                        // write the entry length into the EHDR block
+                        buf.Write(length, 0);
+                        x.Write(buf, 0, EHDR_SIZE);
+                        x.Flush();
+                        log.next += length + EHDR_SIZE;
+                        buf.Write(log.next);
+                        // write out position of new entry in the header
+                        x.Seek(LHDR_TX, SeekOrigin.Begin);
+                        x.Write(buf, 0, sizeof(long));
+                        x.Flush(true);
+                    }
+                    Monitor.Exit(x);
+                    GC.SuppressFinalize(this);
+                }
+            }
+        }
 
         sealed class EventEnumerator : IEventEnumerator
         {
             FileLog log;
+            long length;
             FileStream file;
-            byte[] buf;
-            long end;
-            int length;
+            byte[] buf = new byte[EHDR_SIZE];
+            // stack of block lengths from known last position to end of file
+            Stack<int> lengths = new Stack<int>();
             public TransactionId Transaction { get; internal set; }
             public Stream Stream { get; internal set; }
 
@@ -162,278 +198,47 @@ namespace AppendLog
                 Dispose();
             }
 
-            public EventEnumerator(FileLog slog, TransactionId last)
+            public EventEnumerator(FileLog log, TransactionId last)
             {
-                file = new FileStream(slog.path, FileMode.OpenOrCreate, FileAccess.Read, FileShare.ReadWrite);
-                log = slog;
-                buf = new byte[TXID_POS];
-                Transaction = last.Id == 0 ? log.First : last;
-                file.Position = TXID_POS;
+                this.log = log;
+                this.file = new FileStream(log.path, FileMode.Open, FileAccess.Read, FileShare.ReadWrite, 4096, true);
+                this.length = last.Id;
+                this.Transaction = default(TransactionId);
             }
 
             public async Task<bool> MoveNext()
             {
-                if (file == null) throw new ObjectDisposedException("IEventEnumerator");
-                if (Stream == null)
-                {
-                    // on first run, load the last transaction which terminates the enumeration
-                    await file.ReadAsync(buf, 0, TXID_POS);
-                    end = buf.GetNextId();
-                    file.Seek(Transaction.Id, SeekOrigin.Begin);
-                }
-                Debug.Assert(file.Position <= end);  // if pos > end, then read/seek logic is messed up
-                if (file.Position == end)
+                if (log == null) throw new ObjectDisposedException("IEventEnumerator");
+                var txid = Transaction.Id + length;
+                if (txid == log.next || lengths.Count == 0 && await NoPreviousEntries(txid, log.next))
                     return false;
-                Transaction = new TransactionId(file.Position, log.path);
-                await file.ReadAsync(buf, 0, EHDR_SIZE);
-                length = buf.GetLength();
-                Stream = new BoundedStream(log, file.Position, length);
-                file.Seek(length, SeekOrigin.Current);
+                length = lengths.Peek() + EHDR_SIZE;
+                Transaction = new TransactionId(txid, log.path);
+                Stream = new BoundedStream(file, txid, (int)length - EHDR_SIZE);
                 return true;
             }
 
             public void Dispose()
             {
-                var x = Interlocked.Exchange(ref file, null);
-                if (x != null) x.Dispose();
-            }
-        }
-        
-        /// <summary>
-        /// A file stream that updates the transaction identifiers embedded in a file upon close.
-        /// </summary>
-        /// <remarks>
-        /// This class ensures that only a single writer accesses the file at any one time. Since
-        /// it's append-only, we allow multiple readers to access the file; they are bounded above
-        /// by the file's internal transaction identifier.
-        /// 
-        /// The format of the log data is simply a sequence of records:
-        /// +---------------+---------------+
-        /// | 32-bit length | length * byte |
-        /// +---------------+---------------+
-        /// </remarks>
-        sealed class AtomicAppender : Stream
-        {
-            long start;
-            byte[] buf;
-            FileStream underlying;
-            FileLog log;
-
-            // open the file with exclusive write access and using a 4KB buffer
-            public AtomicAppender(FileLog log, FileStream underlying, long start, byte[] buf)
-            {
-                this.log = log;
-                this.buf = buf;
-                this.underlying = underlying;
-                underlying.Position = this.start = start + EHDR_SIZE;
-            }
-
-            public override long Seek(long offset, SeekOrigin origin)
-            {
-                var newpos = origin == SeekOrigin.Begin   ? start + offset:
-                             origin == SeekOrigin.Current ? Position + offset:
-                                                            Length + offset;
-                if (newpos <= start) throw new ArgumentException("Cannot seek before the beginning of the log.", "offset");
-                return underlying.Seek(newpos, SeekOrigin.Begin);
-            }
-
-            public override long Position
-            {
-                get { return underlying.Position - start; }
-                set { Seek(value, SeekOrigin.Begin); }
-            }
-
-            public override long Length
-            {
-                get { return underlying.Length - start; }
-            }
-
-            public override void SetLength(long value)
-            {
-                underlying.SetLength(value + start);
-            }
-
-            public override void Close()
-            {
-                var length = (int)(underlying.Position - start);
-                if (length > 0)
+                var x = Interlocked.Exchange(ref log, null);
+                if (x != null)
                 {
-                    // write out the 32-bit length block
-                    length.WriteLength(buf);
-                    underlying.Seek(start - EHDR_SIZE, SeekOrigin.Begin);
-                    underlying.Write(buf, 0, EHDR_SIZE);
-
-                    //NOTE FS Atomicity: http://danluu.com/file-consistency/
-                    //Moral: the OS can reorder writes such that the write at 0 could happen first, even if the write
-                    //is called 2nd. If a crash/power loss happens btw the write at 0 and the writes to the end, the
-                    //header is then just pointing at garbage. So call flush to sync data to disk, then write header.
-                    underlying.Flush(); // or Flush(true)?
-
-                    // the block is now successfully persisted, so write out the new txid in the log header
-                    var txid = start + length;
-                    txid.WriteId(buf);
-                    underlying.Seek(TXID_POS, SeekOrigin.Begin); // write txid after version #
-                    underlying.Write(buf, 0, TXID_POS);
-                    underlying.Flush();
-                    base.Close();
-
-                    // update the cached 'next' txid, then release the lock on the underlying stream
-                    Interlocked.Exchange(ref log.next, txid);
-                }
-                else
-                {
-                    base.Close();
-                }
-                Monitor.Exit(underlying);
-            }
-
-            #region Delegated operations
-            public override IAsyncResult BeginRead(byte[] buffer, int offset, int count, AsyncCallback callback, object state)
-            {
-                return underlying.BeginRead(buffer, offset, count, callback, state);
-            }
-            public override IAsyncResult BeginWrite(byte[] buffer, int offset, int count, AsyncCallback callback, object state)
-            {
-                return underlying.BeginWrite(buffer, offset, count, callback, state);
-            }
-            public override bool CanRead
-            {
-                get { return underlying.CanRead; }
-            }
-            public override bool CanWrite
-            {
-                get { return underlying.CanWrite; }
-            }
-            public override bool CanSeek
-            {
-                get { return underlying.CanSeek; }
-            }
-            public override Task CopyToAsync(Stream destination, int bufferSize, CancellationToken cancellationToken)
-            {
-                return underlying.CopyToAsync(destination, bufferSize, cancellationToken);
-            }
-            public override ObjRef CreateObjRef(Type requestedType)
-            {
-                return underlying.CreateObjRef(requestedType);
-            }
-            public override int EndRead(IAsyncResult asyncResult)
-            {
-                return base.EndRead(asyncResult);
-            }
-            public override void EndWrite(IAsyncResult asyncResult)
-            {
-                underlying.EndWrite(asyncResult);
-            }
-            public override void Flush()
-            {
-                underlying.Flush();
-            }
-            public override Task FlushAsync(CancellationToken cancellationToken)
-            {
-                return underlying.FlushAsync(cancellationToken);
-            }
-            public override object InitializeLifetimeService()
-            {
-                return underlying.InitializeLifetimeService();
-            }
-            public override int Read(byte[] buffer, int offset, int count)
-            {
-                return underlying.Read(buffer, offset, count);
-            }
-            public override Task<int> ReadAsync(byte[] buffer, int offset, int count, CancellationToken cancellationToken)
-            {
-                return underlying.ReadAsync(buffer, offset, count, cancellationToken);
-            }
-            public override int ReadByte()
-            {
-                return underlying.ReadByte();
-            }
-            public override int ReadTimeout
-            {
-                get { return underlying.ReadTimeout; }
-                set { underlying.ReadTimeout = value; }
-            }
-            public override void Write(byte[] buffer, int offset, int count)
-            {
-                underlying.Write(buffer, offset, count);
-            }
-            public override Task WriteAsync(byte[] buffer, int offset, int count, CancellationToken cancellationToken)
-            {
-                return underlying.WriteAsync(buffer, offset, count, cancellationToken);
-            }
-            public override void WriteByte(byte value)
-            {
-                underlying.WriteByte(value);
-            }
-            public override int WriteTimeout
-            {
-                get { return underlying.WriteTimeout; }
-                set { underlying.WriteTimeout = value; }
-            }
-            #endregion
-        }
-
-        /// <summary>
-        /// A file stream that's bounded.
-        /// </summary>
-        sealed class BoundedStream : FileStream
-        {
-            long start;
-            long end;
-
-            public BoundedStream(FileLog log, long start, int length)
-                : base(log.path, FileMode.Open, FileAccess.Read, FileShare.ReadWrite)
-            {
-                this.start = start;
-                this.end = start + length;
-                base.Seek(start, SeekOrigin.Begin);
-            }
-
-            public override long Seek(long offset, SeekOrigin origin)
-            {
-                var newpos = origin == SeekOrigin.Begin   ? start + offset:
-                             origin == SeekOrigin.Current ? Position + offset:
-                                                            Length + offset;
-                if (newpos < start) throw new ArgumentException("Cannot seek before the beginning of the log.", "offset");
-                if (newpos >= end) throw new ArgumentException("Cannot seek past the end of the log.", "offset");
-                return base.Seek(offset, origin);
-            }
-
-            public override long Position
-            {
-                get { return base.Position; }
-                set
-                {
-                    if (value < start) throw new ArgumentException("Cannot seek before the end of the log.", "offset");
-                    if (value >= end) throw new ArgumentException("Cannot seek past the end of the log.", "offset");
-                    base.Position = value;
+                    file.Dispose();
+                    GC.SuppressFinalize(this);
                 }
             }
 
-            public override long Length
+            async Task<bool> NoPreviousEntries(long last, long next)
             {
-                get { return end - start; }
-            }
-
-            public override void SetLength(long value)
-            {
-                base.SetLength(value + start);
-            }
-
-            public override int Read(byte[] array, int offset, int count)
-            {
-                return base.Read(array, offset, (int)Math.Min(end - Position, count));
-            }
-
-            public override IAsyncResult BeginRead(byte[] array, int offset, int numBytes, AsyncCallback userCallback, object stateObject)
-            {
-                return base.BeginRead(array, offset, (int)Math.Min(end - Position, numBytes), userCallback, stateObject);
-            }
-
-            public override int ReadByte()
-            {
-                if (Position >= end) throw new ArgumentException("Cannot seek past the end of the log.");
-                return base.ReadByte();
+                while (last != next)
+                {
+                    file.Seek(next - EHDR_SIZE, SeekOrigin.Begin);
+                    await file.ReadAsync(buf, 0, EHDR_SIZE);
+                    var x = buf.ReadInt32();
+                    lengths.Push(x);
+                    next -= x + EHDR_SIZE;
+                }
+                return lengths.Count == 0;
             }
         }
         #endregion

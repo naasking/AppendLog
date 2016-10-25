@@ -3,3 +3,13 @@
  * add IAppendLog implementation for SQL backend
  * add remote IAppendLog implementation
  * add replicated IAppendLog implementation using Raft
+
+= MAYBE =
+
+ * file rollover for compaction purposes, ie. can delete old entries by starting to
+   write to a different file than the one we're reading from, initialized with a new base offset. We
+   can then either copy the entries starting at the new base into the new file, or change the read
+   logic to also open the new file when it's done with the read file. The latter is preferable.
+ * creating FileStreams is expensive, so perhaps have a BoundedStream pool for readers
+ * use 128 bit transaction ids, and store the "base" offset at the beginning of the db file --
+   dovetails with file rollover feature

@@ -1,4 +1,5 @@
 ﻿using System;
+using System.Threading;
 using System.IO;
 using System.Collections.Generic;
 using System.Linq;
@@ -21,14 +22,14 @@ Sed cursus neque in semper maximus. Integer condimentum erat vel porttitor maxim
 
         static void Main(string[] args)
         {
-            BasicTest();
-            MultiThreadTest(FileLog.Create("multi.db").Result);
-            //MultiThreadTest(MappedLog.Create("multi.db").Result);
-            SingleTest();
+            //BasicTest();
+            MultiThreadTest();
+            //SingleTest();
         }
 
-        const int ITER = 1000;
-        static IAppendLog log;
+        const int ITER = 3000;
+        static FileLog log;
+        static byte[] tmpbuf;
 
         static void SingleTest()
         {
@@ -36,54 +37,82 @@ Sed cursus neque in semper maximus. Integer condimentum erat vel porttitor maxim
             var path = Path.GetFullPath("test.db");
             try
             {
-                clock.Start();
-                var buf = Encoding.ASCII.GetBytes(TXT);
-                var id = new byte[sizeof(long)];
-                using (var file = File.OpenWrite(path))
+                var buf = new byte[sizeof(long)];
+                TransactionId tx;
+                tmpbuf = Encoding.ASCII.GetBytes(TXT);
+                using (var fs = new FileStream(path, FileMode.OpenOrCreate, FileAccess.ReadWrite, FileShare.ReadWrite, 4 * 4096, false))
                 {
-                    file.Position += sizeof(long);
+                    // log header
+                    fs.Write(buf, 0, sizeof(int));
+                    fs.Write(buf, 0, sizeof(int));
+                    fs.Write(buf, 0, sizeof(int));
+                    fs.Write(buf, 0, sizeof(int));
+                    fs.Write(buf, 0, sizeof(int));
+                    fs.Write(buf, 0, sizeof(int));
+
+                    clock.Start();
                     for (int i = 0; i < 3 * ITER; ++i)
                     {
-                        // advance past length header, then write out data
-                        //var lhdr = file.Position - sizeof(long);
-                        file.Write(buf, 0, buf.Length);
-                        // seek back to length header and write it out
-                        //file.Position = pos;
-                        file.Write(id, 0, id.Length);
-                        //var end = file.Position;
-                        //file.Flush();
-                        // seek back to log header and write out pointer
-                        //file.Seek(0, SeekOrigin.Begin);
-                        file.Write(id, 0, id.Length);
-                        file.Flush();
-                        //file.Seek(end + sizeof(long), SeekOrigin.Begin);
+                        // begin FileLog.Append
+                        Monitor.Enter(fs);
+                        tx = log.First;
+                        var file = new BoundedStream(fs, fs.Length, int.MaxValue);
+                        try
+                        {
+                            var start = file.Position;
+
+                            // end FileLog.Append
+                            file.Write(tmpbuf, 0, tmpbuf.Length);
+
+                            // begin FileLog.Append.Dispose
+                            var length = file.Length - start;
+                            if (length > 0)
+                            {
+                                if (file.Position != file.Length)
+                                    file.Seek(0, SeekOrigin.End);
+                                buf.Write(length);
+                                file.Write(buf, 0, sizeof(int));
+                                file.Flush();
+                                var pos = file.Position;
+                                file.Seek(16, SeekOrigin.Begin);
+                                buf.Write(pos);
+                                file.Write(buf, 0, sizeof(long));
+                                file.Flush();
+                                file.Seek(0, SeekOrigin.End);
+                            }
+                        }
+                        finally
+                        {
+                            Monitor.Exit(fs);
+                        }
+                        //end FileLog.Appender.Dispose
                     }
+                    clock.Stop();
+                    Console.WriteLine("Single size: {0} kB", fs.Length);
                 }
-                clock.Stop();
+                PrintStats("Single", clock.ElapsedMilliseconds);
             }
             finally
             {
                 File.Delete(path);
             }
-            var secs = clock.ElapsedMilliseconds / 1000.0;
-            Console.WriteLine("Single: {0:0} tx/sec", 3 * ITER / secs);
         }
 
-        static void MultiThreadTest(IAppendLog x)
+        static void MultiThreadTest()
         {
-            log = x;
+            log = FileLog.Create("multi.db", false).Result;
             var clock = new Stopwatch();
             try
             {
+                tmpbuf = Encoding.ASCII.GetBytes(TXT);
                 clock.Start();
-                //var t0 = Task.Run(new Action(Run));
-                //var t1 = Task.Run(new Action(Run));
+                var t0 = Task.Run(new Action(Run));
+                var t1 = Task.Run(new Action(Run));
                 Run();
-                Run();
-                Run();
-                //t0.Wait();
-                //t1.Wait();
+                t0.Wait();
+                t1.Wait();
                 clock.Stop();
+                //log.Stats();
                 var count = 0;
                 using (var ie = log.Replay(log.First))
                 {
@@ -96,8 +125,7 @@ Sed cursus neque in semper maximus. Integer condimentum erat vel porttitor maxim
                         }
                     }
                 }
-                var secs = clock.ElapsedMilliseconds / 1000.0;
-                Console.WriteLine("{0}: {1:0} tx/sec", x.GetType().Name, 3 * ITER / secs);
+                PrintStats("FileLog", clock.ElapsedMilliseconds);
                 Debug.Assert(count == 3 * ITER);
             }
             finally
@@ -109,54 +137,50 @@ Sed cursus neque in semper maximus. Integer condimentum erat vel porttitor maxim
 
         static void Run()
         {
-            var tx = log.First;
-            var buf = Encoding.ASCII.GetBytes(TXT);
+            TransactionId tx;
             for (int i = 0; i < ITER; ++i)
             {
-                using (var x = log.Append(out tx))
+                Stream output;
+                using (log.Append(out output, out tx))
                 {
-                    x.Write(buf, 0, buf.Length);
+                    output.Write(tmpbuf, 0, tmpbuf.Length);
                 }
-                //using (var ie = fl.Replay(tx))
-                //{
-                //    while (ie.MoveNext().Result)
-                //    {
-                //        using (var tr = new StreamReader(ie.Stream))
-                //        {
-                //            var tmp = tr.ReadToEnd();
-                //            Debug.Assert(tmp == TXT);
-                //        }
-                //    }
-                //    tx = ie.Transaction;
-                //}
             }
+        }
+
+        static void PrintStats(string name, long ms)
+        {
+            var secs = ms / 1000.0;
+            Console.WriteLine("{0}: {1:0} tx/sec", name, 3 * ITER / secs);
         }
 
         static void BasicTest()
         {
             var path = "basic.db";
-            var fl = FileLog.Create(path).Result;
+            var log = FileLog.Create(path, false).Result;
             try
             {
                 TransactionId tx;
-                using (var buf = fl.Append(out tx))
+                Stream buf;
+                using (log.Append(out buf, out tx))
                 {
                     buf.Write(Encoding.ASCII.GetBytes("hello"), 0, 5);
                     buf.Write(Encoding.ASCII.GetBytes("world!"), 0, 6);
                 }
-                using (var buf = fl.Append(out tx))
+                using (log.Append(out buf, out tx))
                 {
                     buf.Write(Encoding.ASCII.GetBytes("hello"), 0, 5);
                     buf.Write(Encoding.ASCII.GetBytes("world!"), 0, 6);
                 }
                 var count = 0;
-                using (var ie = fl.Replay(fl.First))
+                using (var ie = log.Replay(log.First))
                 {
                     while (ie.MoveNext().Result)
                     {
                         using (var tr = new StreamReader(ie.Stream))
                         {
-                            Debug.Assert(tr.ReadToEnd() == "helloworld!");
+                            var tmp = tr.ReadToEnd();
+                            Debug.Assert(tmp == "helloworld!");
                             ++count;
                         }
                     }
@@ -165,7 +189,7 @@ Sed cursus neque in semper maximus. Integer condimentum erat vel porttitor maxim
             }
             finally
             {
-                fl.Dispose();
+                log.Dispose();
                 File.Delete(Path.GetFullPath(path));
             }
         }
