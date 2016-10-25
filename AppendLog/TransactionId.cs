@@ -98,7 +98,9 @@ namespace AppendLog
         TransactionId(SerializationInfo info, StreamingContext context)
         {
             id = info.GetInt64(nameof(id));
-            path = string.Intern(System.IO.Path.GetFullPath(info.GetString(nameof(path))));
+            var x = info.GetString(nameof(path));
+            if (x == null) throw new ArgumentNullException("path");
+            path = string.Intern(System.IO.Path.GetFullPath(x));
         }
 
         void ISerializable.GetObjectData(SerializationInfo info, StreamingContext context)

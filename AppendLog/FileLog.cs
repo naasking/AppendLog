@@ -6,7 +6,7 @@ using System.Collections.Generic;
 using System.Linq;
 using System.Text;
 using System.IO;
-using System.Diagnostics;
+using System.Diagnostics.Contracts;
 
 namespace AppendLog
 {
@@ -15,10 +15,10 @@ namespace AppendLog
     /// </summary>
     public sealed class FileLog : IAppendLog
     {
-        string path;
+        readonly string path;
         long next;
         FileStream writer;
-        byte[] writeBuffer = new byte[sizeof(long)];
+        readonly byte[] writeBuffer;
         
         // current log file version number
         internal static readonly Version VERSION = new Version(0, 0, 0, 1);
@@ -30,12 +30,32 @@ namespace AppendLog
         internal const int LHDR_REV   = 8;  // offset of revision vers#
         internal const int LHDR_SIZE = 24; // major + minor + rev + padding(6) + txid[62]
         internal const int LHDR_TX = 16;    // the start of the tx buffer
+
+        FileLog(string path, FileStream writer, long next)
+        {
+            Contract.Requires(!string.IsNullOrEmpty(path));
+            Contract.Requires(writer != null);
+            Contract.Requires(next >= LHDR_TX);
+            this.path = path;
+            this.writer = writer;
+            this.next = next;
+            this.writeBuffer = new byte[sizeof(long)];
+        }
         
         ~FileLog()
         {
             Dispose();
         }
-        
+
+        [ContractInvariantMethod]
+        void Invariants()
+        {
+            Contract.Invariant(!string.IsNullOrEmpty(path));
+            Contract.Invariant(next >= LHDR_TX);
+            Contract.Invariant(writeBuffer != null);
+            Contract.Invariant(writeBuffer.Length >= sizeof(long));
+        }
+
         /// <summary>
         /// An async FileLog constructor.
         /// </summary>
@@ -76,7 +96,7 @@ namespace AppendLog
                 }
                 next = buf.ReadInt32(LHDR_TX);
             }
-            return new FileLog { path = path, next = next, writer = writer };
+            return new FileLog(path, writer, next);
         }
 
         /// <summary>
@@ -111,11 +131,14 @@ namespace AppendLog
         /// </remarks>
         public IDisposable Append(out Stream output, out TransactionId transaction)
         {
-            Monitor.Enter(writer);
+            var x = writer;
+            if (x == null) throw new ObjectDisposedException(string.Format("FileLog ({0}) has been disposed.", path));
+            Monitor.Enter(x);
+            if (writer == null) throw new ObjectDisposedException(string.Format("FileLog ({0}) has been disposed.", path));
             transaction = new TransactionId(next, path);
-            writer.Seek(next, SeekOrigin.Begin);
-            output = new BoundedStream(writer, next, int.MaxValue);
-            return new Appender(this) { buf = writeBuffer };
+            x.Seek(next, SeekOrigin.Begin);
+            output = new BoundedStream(x, next, int.MaxValue);
+            return new Appender(this, writeBuffer);
         }
         
         public void Dispose()
@@ -133,12 +156,16 @@ namespace AppendLog
         #region Internals
         sealed class Appender : IDisposable
         {
-            internal FileStream writer;
-            internal FileLog log;
-            internal byte[] buf;
+            FileStream writer;
+            readonly FileLog log;
+            readonly byte[] buf;
 
-            public Appender(FileLog log)
+            public Appender(FileLog log, byte[] buf)
             {
+                Contract.Requires(log != null);
+                Contract.Requires(buf != null);
+                Contract.Requires(buf.Length >= sizeof(long));
+                this.buf = buf;
                 this.log = log;
                 this.writer = log.writer;
             }
@@ -146,6 +173,14 @@ namespace AppendLog
             ~Appender()
             {
                 Dispose();
+            }
+
+            [ContractInvariantMethod]
+            void Invariants()
+            {
+                Contract.Invariant(log != null);
+                Contract.Invariant(buf != null);
+                Contract.Invariant(buf.Length >= sizeof(long));
             }
 
             public void Dispose()
@@ -181,10 +216,10 @@ namespace AppendLog
         {
             FileLog log;
             long length;
-            FileStream file;
-            byte[] buf = new byte[EHDR_SIZE];
+            readonly FileStream file;
+            readonly byte[] buf = new byte[EHDR_SIZE];
             // stack of block lengths from known last position to end of file
-            Stack<int> lengths = new Stack<int>();
+            readonly Stack<int> lengths = new Stack<int>();
             public TransactionId Transaction { get; internal set; }
             public Stream Stream { get; internal set; }
 
@@ -193,8 +228,16 @@ namespace AppendLog
                 Dispose();
             }
 
+            [ContractInvariantMethod]
+            void Invariants()
+            {
+                Contract.Invariant(file != null);
+                Contract.Invariant(length >= 0);
+            }
+
             public EventEnumerator(FileLog log, TransactionId last)
             {
+                Contract.Requires(log != null);
                 this.log = log;
                 this.file = new FileStream(log.path, FileMode.Open, FileAccess.Read, FileShare.ReadWrite, 4096, true);
                 this.length = last.Id;
@@ -230,6 +273,7 @@ namespace AppendLog
                     file.Seek(next - EHDR_SIZE, SeekOrigin.Begin);
                     await file.ReadAsync(buf, 0, EHDR_SIZE);
                     var x = buf.ReadInt32();
+                    if (x < 0) throw new InvalidOperationException(string.Format("Found a negative length {0} in FileLog ({1})", x, log.path));
                     lengths.Push(x);
                     next -= x + EHDR_SIZE;
                 }

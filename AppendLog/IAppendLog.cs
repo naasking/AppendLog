@@ -4,7 +4,7 @@ using System.IO;
 using System.Collections.Generic;
 using System.Linq;
 using System.Text;
-using System.Diagnostics;
+using System.Diagnostics.Contracts;
 using System.Runtime.InteropServices;
 
 namespace AppendLog
@@ -112,16 +112,22 @@ namespace AppendLog
         #region Internal marshalling to/from byte arrays in big endian format
         public static long ReadInt64(this byte[] x, int i = 0)
         {
+            Contract.Requires(x != null);
+            Contract.Requires(i + 7 < x.Length);
+            Contract.Requires(i >= 0);
             unchecked
             {
                 return (long)(BitConverter.IsLittleEndian
-                     ? (ulong)x[0 + i] << 56 | (ulong)x[1 + i] << 48 | (ulong)x[2 + i] << 40 | (ulong)x[3 + i] << 32 | (ulong)x[4 + i] << 24 | (ulong)x[5 + i] << 16 | (ulong)x[6 + i] << 8 | (ulong)x[7 + i]
+                     ? (ulong)x[0 + i] << 56 | (ulong)x[1 + i] << 48 | (ulong)x[2 + i] << 40 | (ulong)x[3 + i] << 32 | (ulong)x[4 + i] << 24 | (ulong)x[5 + i] << 16 | (ulong)x[6 + i] <<  8 | (ulong)x[7 + i]
                      : (ulong)x[0 + i]       | (ulong)x[1 + i] <<  8 | (ulong)x[2 + i] << 16 | (ulong)x[3 + i] << 24 | (ulong)x[4 + i] << 32 | (ulong)x[5 + i] << 40 | (ulong)x[6 + i] << 48 | (ulong)x[7 + i] << 56);
             }
         }
 
         public static int ReadInt32(this byte[] x, int i = 0)
         {
+            Contract.Requires(x != null);
+            Contract.Requires(i + 3 < x.Length);
+            Contract.Requires(i >= 0);
             unchecked
             {
                 return (int)(BitConverter.IsLittleEndian
@@ -132,6 +138,9 @@ namespace AppendLog
 
         public static void Write(this byte[] x, int len, int i = 0)
         {
+            Contract.Requires(x != null);
+            Contract.Requires(i + 3 < x.Length);
+            Contract.Requires(i >= 0);
             unchecked
             {
                 if (BitConverter.IsLittleEndian)
@@ -153,6 +162,9 @@ namespace AppendLog
 
         public static void Write(this byte[] x, long id, int i = 0)
         {
+            Contract.Requires(x != null);
+            Contract.Requires(i + 7 < x.Length);
+            Contract.Requires(i >= 0);
             unchecked
             {
                 if (BitConverter.IsLittleEndian)

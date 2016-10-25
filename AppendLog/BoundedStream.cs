@@ -3,6 +3,7 @@ using System.IO;
 using System.Threading;
 using System.Threading.Tasks;
 using System.Runtime.Remoting;
+using System.Diagnostics.Contracts;
 
 namespace AppendLog
 {
@@ -11,9 +12,9 @@ namespace AppendLog
     /// </summary>
     public sealed class BoundedStream : Stream
     {
-        long start;
-        int length;
-        FileStream underlying;
+        readonly long start;
+        readonly int length;
+        readonly FileStream underlying;
 
         /// <summary>
         /// Construct a bounded stream.
@@ -23,14 +24,31 @@ namespace AppendLog
         /// <param name="length"></param>
         public BoundedStream(FileStream underlying, long start, int length)
         {
+            Contract.Requires(underlying != null);
+            Contract.Requires(start >= 0);
+            Contract.Requires(length >= 0);
+            //Contract.Requires(start + length <= underlying.Length);
             this.length = length;
             this.underlying = underlying;
-            underlying.Position = this.start = start;
+            underlying.Seek(this.start = start, SeekOrigin.Begin);
         }
 
         ~BoundedStream()
         {
             Dispose();
+        }
+
+        [ContractInvariantMethod]
+        void Invaraints()
+        {
+            Contract.Invariant(underlying != null);
+            Contract.Invariant(start >= 0);
+            Contract.Invariant(length >= 0);
+            //Contract.Invariant(start + length <= underlying.Length);
+            //Contract.Invariant(underlying.Position >= start);
+            //Contract.Invariant(underlying.Position < start + length);
+            //Contract.Invariant(length >= Position);
+            //Contract.Invariant(Position >= 0);
         }
 
         public override long Seek(long offset, SeekOrigin origin)
@@ -39,7 +57,7 @@ namespace AppendLog
                       origin == SeekOrigin.Current ? underlying.Position + offset:
                                                      underlying.Length + offset;
             if (pos < start) throw new ArgumentException("Cannot seek before the beginning of the log.", "offset");
-            if (pos > start + length) throw new ArgumentException("Cannot seek past the end of the log.", "offset");
+            if (pos >= start + length) throw new ArgumentException("Cannot seek past the end of the log.", "offset");
             return underlying.Seek(pos, SeekOrigin.Begin);
         }
 
@@ -56,33 +74,59 @@ namespace AppendLog
 
         public override void SetLength(long value)
         {
-            if (length < 0) throw new ArgumentOutOfRangeException("value", "Attempted to set the value parameter to less than 0.");
+            if (value < 0) throw new ArgumentOutOfRangeException("value", "Attempted to set the value parameter to less than 0.");
             underlying.SetLength(value + start);
         }
 
         public override IAsyncResult BeginRead(byte[] buffer, int offset, int count, AsyncCallback callback, object state)
         {
-            return underlying.BeginRead(buffer, offset, Math.Min(count, (int)(length - Position)), callback, state);
+            return underlying.BeginRead(buffer, offset, Remainder(count), callback, state);
         }
         public override IAsyncResult BeginWrite(byte[] buffer, int offset, int count, AsyncCallback callback, object state)
         {
-            return underlying.BeginWrite(buffer, offset, Math.Min(count, (int)(length - Position)), callback, state);
+            return underlying.BeginWrite(buffer, offset, Remainder(count), callback, state);
         }
         public override int Read(byte[] buffer, int offset, int count)
         {
-            return underlying.Read(buffer, offset, Math.Min(count, (int)(length - Position)));
+            return underlying.Read(buffer, offset, Remainder(count));
         }
         public override Task<int> ReadAsync(byte[] buffer, int offset, int count, CancellationToken cancellationToken)
         {
-            return underlying.ReadAsync(buffer, offset, Math.Min(count, (int)(length - Position)), cancellationToken);
+            return underlying.ReadAsync(buffer, offset, Remainder(count), cancellationToken);
         }
         public override void Write(byte[] buffer, int offset, int count)
         {
-            underlying.Write(buffer, offset, Math.Min(count, (int)(length - Position)));
+            underlying.Write(buffer, offset, Remainder(count));
         }
         public override Task WriteAsync(byte[] buffer, int offset, int count, CancellationToken cancellationToken)
         {
-            return underlying.WriteAsync(buffer, offset, Math.Min(count, (int)(length - Position)), cancellationToken);
+            return underlying.WriteAsync(buffer, offset, Remainder(count), cancellationToken);
+        }
+        public override async Task CopyToAsync(Stream destination, int bufferSize, CancellationToken cancellationToken)
+        {
+            // have to restrict copying to the length of the bounded stream
+            var buf = new byte[bufferSize];
+            while (Position < length)
+            {
+                var read = await ReadAsync(buf, 0, bufferSize);
+                await destination.WriteAsync(buf, 0, read);
+            }
+        }
+        public override int ReadByte()
+        {
+            return Position == length ? -1 : underlying.ReadByte();
+        }
+        public override void WriteByte(byte value)
+        {
+            if (Position == length) throw new InvalidOperationException("Cannot write past the end of the stream.");
+            underlying.WriteByte(value);
+        }
+
+        int Remainder(int count)
+        {
+            Contract.Requires(count >= 0);
+            Contract.Ensures(Contract.Result<int>() >= 0);
+            return Math.Min(count, (int)Math.Max(0, length - Position));
         }
 
         #region Delegated operations
@@ -101,10 +145,6 @@ namespace AppendLog
         public override bool CanTimeout
         {
             get { return underlying.CanTimeout; }
-        }
-        public override Task CopyToAsync(Stream destination, int bufferSize, CancellationToken cancellationToken)
-        {
-            return underlying.CopyToAsync(destination, bufferSize, cancellationToken);
         }
         public override ObjRef CreateObjRef(Type requestedType)
         {
@@ -130,18 +170,10 @@ namespace AppendLog
         {
             return underlying.InitializeLifetimeService();
         }
-        public override int ReadByte()
-        {
-            return underlying.ReadByte();
-        }
         public override int ReadTimeout
         {
             get { return underlying.ReadTimeout; }
             set { underlying.ReadTimeout = value; }
-        }
-        public override void WriteByte(byte value)
-        {
-            underlying.WriteByte(value);
         }
         public override int WriteTimeout
         {
