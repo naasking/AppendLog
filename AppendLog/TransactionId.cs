@@ -1,4 +1,5 @@
 ﻿using System;
+using System.Diagnostics.Contracts;
 using System.Runtime.Serialization;
 
 namespace AppendLog
@@ -97,6 +98,7 @@ namespace AppendLog
         #region Serialization interface
         TransactionId(SerializationInfo info, StreamingContext context)
         {
+            Contract.Requires(info != null);
             id = info.GetInt64(nameof(id));
             var x = info.GetString(nameof(path));
             if (x == null) throw new ArgumentNullException("path");

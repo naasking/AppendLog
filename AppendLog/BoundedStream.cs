@@ -44,10 +44,10 @@ namespace AppendLog
             Contract.Invariant(underlying != null);
             Contract.Invariant(start >= 0);
             Contract.Invariant(length >= 0);
-            Contract.Invariant(underlying.Position >= start);
+            //Contract.Invariant(underlying.Position >= start);
             //Contract.Invariant(underlying.Position < start + length);
             //Contract.Invariant(length >= Position);
-            //Contract.Invariant(Position >= 0);
+            Contract.Invariant(Position >= 0);
         }
 
         public override long Seek(long offset, SeekOrigin origin)
@@ -58,14 +58,12 @@ namespace AppendLog
                                                      underlying.Length + offset;
             if (pos < start) throw new ArgumentException("Cannot seek before the beginning of the log.", "offset");
             if (pos >= start + length) throw new ArgumentException("Cannot seek past the end of the log.", "offset");
-            var npos = underlying.Seek(pos, SeekOrigin.Begin) - start;
-            Contract.Assume(underlying.Position == pos);
-            return npos;
+            return underlying.Seek(pos, SeekOrigin.Begin) - start;
         }
 
         public override long Position
         {
-            get { return underlying.Position - start; }
+            get { return Math.Max(0, underlying.Position - start); }
             set { Seek(value, SeekOrigin.Begin); }
         }
 
@@ -109,10 +107,11 @@ namespace AppendLog
         {
             // have to restrict copying to the length of the bounded stream
             var buf = new byte[bufferSize];
-            while (Position < length)
+            while (Position < length && !cancellationToken.IsCancellationRequested)
             {
-                var read = await ReadAsync(buf, 0, bufferSize);
-                await destination.WriteAsync(buf, 0, read);
+                var read = await ReadAsync(buf, 0, bufferSize, cancellationToken);
+                if (cancellationToken.IsCancellationRequested) return;
+                await destination.WriteAsync(buf, 0, read, cancellationToken);
             }
         }
         public override int ReadByte()
