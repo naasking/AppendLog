@@ -76,11 +76,12 @@ namespace AppendLog
         //        while (await ie.MoveNext())
         //        {
         //            TransactionId tx;
-        //            using (var output = target.Append(out tx))
+        //            Stream output;
+        //            using (target.Append(out output, out tx))
         //            {
         //                lastEvent = ie.Transaction;
         //                Debug.Assert(tx == lastEvent);
-        //                lastEvent.Id.WriteId(buf);
+        //                buf.Write(lastEvent.Id);
         //                await output.WriteAsync(buf, 0, buf.Length);
         //                await ie.Stream.CopyToAsync(output);
         //            }
@@ -89,24 +90,24 @@ namespace AppendLog
         //    return lastEvent;
         //}
 
-        ///// <summary>
-        ///// Replay events using a callback.
-        ///// </summary>
-        ///// <param name="log"></param>
-        ///// <param name="lastEvent"></param>
-        ///// <param name="forEach"></param>
-        ///// <returns></returns>
-        //public static async Task Replay(this IAppendLog log, TransactionId lastEvent, Func<TransactionId, Stream, Task<bool>> forEach)
-        //{
-        //    using (var ie = log.Replay(lastEvent))
-        //    {
-        //        while (await ie.MoveNext())
-        //        {
-        //            if (!await forEach(ie.Transaction, ie.Stream))
-        //                return;
-        //        }
-        //    }
-        //}
+        /// <summary>
+        /// Replay events using a callback.
+        /// </summary>
+        /// <param name="log"></param>
+        /// <param name="lastEvent"></param>
+        /// <param name="forEach"></param>
+        /// <returns></returns>
+        public static async Task Replay(this IAppendLog log, TransactionId lastEvent, Func<TransactionId, Stream, Task<bool>> forEach)
+        {
+            using (var ie = log.Replay(lastEvent))
+            {
+                while (await ie.MoveNext())
+                {
+                    if (!await forEach(ie.Transaction, ie.Stream))
+                        return;
+                }
+            }
+        }
 
         #region Internal marshalling to/from byte arrays in big endian format
         public static long ReadInt64(this byte[] x, int i = 0)
