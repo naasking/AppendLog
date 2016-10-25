@@ -46,10 +46,10 @@ namespace AppendLog
         {
             if (path == null) throw new ArgumentNullException("path");
             path = string.Intern(Path.GetFullPath(path));
-            // check the file's version number if file exists, else write it out and initialize the log
-            long next;
             var writer = new FileStream(path, FileMode.OpenOrCreate, FileAccess.ReadWrite, FileShare.Read, 4096, useAsync);
             var buf = new byte[LHDR_SIZE];
+            // check the file's version number if file exists, else write it out and initialize the log
+            long next;
             Version vers;
             if (writer.Length < LHDR_SIZE)
             {
@@ -117,13 +117,7 @@ namespace AppendLog
             output = new BoundedStream(writer, next, int.MaxValue);
             return new Appender(this) { buf = writeBuffer };
         }
-
-        //[Conditional("DEBUG")]
-        //public void Stats()
-        //{
-        //    Console.WriteLine("FileLog ({0}): {1} bytes", Path.GetFileName(path), writer.Length);
-        //}
-
+        
         public void Dispose()
         {
             // we could track outstanding write stream and dispose of it, but there's nothing
@@ -168,13 +162,14 @@ namespace AppendLog
                         // write the entry length into the EHDR block
                         buf.Write(length, 0);
                         x.Write(buf, 0, EHDR_SIZE);
-                        x.Flush();
+                        x.Flush(true);
                         log.next += length + EHDR_SIZE;
                         buf.Write(log.next);
                         // write out position of new entry in the header
                         x.Seek(LHDR_TX, SeekOrigin.Begin);
                         x.Write(buf, 0, sizeof(long));
                         x.Flush(true);
+                        //FIXME: power loss here before disk write could lose the last tx, so 
                     }
                     Monitor.Exit(x);
                     GC.SuppressFinalize(this);
