@@ -94,8 +94,10 @@ ensures the log header is updated to point to the new entry.
 # Future Work
 
  * The append handle is currently just an opaque IDisposable, which
-   breaks with the ubiquitous async API of IAppendLog. Perhaps define
-   a new async disposable interface.
+   breaks with the ubiquitous async API of IAppendLog because this is
+   where all the slow flushing occurs. Perhaps define a new async
+   disposable interface. Downside is that it doesn't integrate nicely
+   with C#'s using-statement.
  * The single writer still needs to do a bit of seeking to write the
    header at the log start, but there might be a disk format that
    requires no seeking. For instance, a layout where the log file
