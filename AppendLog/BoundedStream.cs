@@ -27,10 +27,10 @@ namespace AppendLog
             Contract.Requires(underlying != null);
             Contract.Requires(start >= 0);
             Contract.Requires(length >= 0);
-            //Contract.Requires(start + length <= underlying.Length);
             this.length = length;
             this.underlying = underlying;
             underlying.Seek(this.start = start, SeekOrigin.Begin);
+            Contract.Assume(underlying.Position == start);
         }
 
         ~BoundedStream()
@@ -44,8 +44,7 @@ namespace AppendLog
             Contract.Invariant(underlying != null);
             Contract.Invariant(start >= 0);
             Contract.Invariant(length >= 0);
-            //Contract.Invariant(start + length <= underlying.Length);
-            //Contract.Invariant(underlying.Position >= start);
+            Contract.Invariant(underlying.Position >= start);
             //Contract.Invariant(underlying.Position < start + length);
             //Contract.Invariant(length >= Position);
             //Contract.Invariant(Position >= 0);
@@ -53,12 +52,15 @@ namespace AppendLog
 
         public override long Seek(long offset, SeekOrigin origin)
         {
+            //Contract.Ensures(Contract.Result<long>() <= length);
             var pos = origin == SeekOrigin.Begin   ? start + offset:
                       origin == SeekOrigin.Current ? underlying.Position + offset:
                                                      underlying.Length + offset;
             if (pos < start) throw new ArgumentException("Cannot seek before the beginning of the log.", "offset");
             if (pos >= start + length) throw new ArgumentException("Cannot seek past the end of the log.", "offset");
-            return underlying.Seek(pos, SeekOrigin.Begin);
+            var npos = underlying.Seek(pos, SeekOrigin.Begin) - start;
+            Contract.Assume(underlying.Position == pos);
+            return npos;
         }
 
         public override long Position
@@ -80,7 +82,8 @@ namespace AppendLog
 
         public override IAsyncResult BeginRead(byte[] buffer, int offset, int count, AsyncCallback callback, object state)
         {
-            return underlying.BeginRead(buffer, offset, Remainder(count), callback, state);
+            count = Remainder(count);
+            return underlying.BeginRead(buffer, offset, count, callback, state);
         }
         public override IAsyncResult BeginWrite(byte[] buffer, int offset, int count, AsyncCallback callback, object state)
         {
@@ -126,7 +129,7 @@ namespace AppendLog
         {
             Contract.Requires(count >= 0);
             Contract.Ensures(Contract.Result<int>() >= 0);
-            return Math.Min(count, (int)Math.Max(0, length - Position));
+            return Math.Min(count, Math.Max(0, (int)(length - Position)));
         }
 
         #region Delegated operations
