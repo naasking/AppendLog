@@ -81,7 +81,7 @@ I believe the API to be complete and sufficient, but more testing is
 needed, particularly for BoundedStream. The simple file format is mostly
 settled for now.
 
-On an AMD FX-2120 with an SSD, I get ~80,000-100,000 writes/second,
+On an AMD FX-8120 with an SSD, I get ~80,000-100,000 writes/second,
 which corresponds roughly to the raw buffered I/O speed of FileStream.
 This is precisely what's expected given log append is just a thin
 wrapper around FileStream.
