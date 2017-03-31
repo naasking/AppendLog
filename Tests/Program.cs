@@ -25,8 +25,8 @@ Sed cursus neque in semper maximus. Integer condimentum erat vel porttitor maxim
         {
             //BasicTest();
             //MultiThreadTest();
-            SingleTest();
             SingleTestMM();
+            SingleTest();
         }
 
         const int ITER = 9000;
@@ -43,10 +43,13 @@ Sed cursus neque in semper maximus. Integer condimentum erat vel porttitor maxim
                 tmpbuf = Encoding.ASCII.GetBytes(TXT);
                 using (var fs = new FileStream(path, FileMode.OpenOrCreate, FileAccess.ReadWrite, FileShare.ReadWrite, 4 * 4096, false))
                 {
-                    SingleRun(clock, new BoundedStream(fs, 0, 64*1024));
-                    //SingleRun(clock, new BoundedStream(fs, 0, 64*1024*1024));
+                    SingleRun(clock, fs);
+                    //using (var file = new BoundedStream(fs, 0, 64 * 1024 * 1024))
+                    //{
+                    //    SingleRun(clock, file);
+                    //}
                 }
-                PrintStats("Single", clock.ElapsedMilliseconds);
+                PrintStats("SingleFS", clock.ElapsedMilliseconds);
             }
             finally
             {
@@ -62,7 +65,7 @@ Sed cursus neque in semper maximus. Integer condimentum erat vel porttitor maxim
             {
                 var buf = new byte[sizeof(long)];
                 tmpbuf = Encoding.ASCII.GetBytes(TXT);
-                using (var map = MemoryMappedFile.CreateFromFile(path, FileMode.OpenOrCreate, "testmm", 128 * 1024 * 1024, MemoryMappedFileAccess.ReadWrite))
+                using (var map = MemoryMappedFile.CreateFromFile(path, FileMode.OpenOrCreate, "testmm", 66 * 1024 * 1024, MemoryMappedFileAccess.ReadWrite))
                 {
                     using (var fs = map.CreateViewStream())
                     {
@@ -101,22 +104,22 @@ Sed cursus neque in semper maximus. Integer condimentum erat vel porttitor maxim
                     // end FileLog.Append
 
                     // begin FileLog.Append.Dispose
-                    //var length = file.Length - start;
-                    //if (length > 0)
-                    //{
-                    //if (file.Position != file.Length)
-                    //    file.Seek(0, SeekOrigin.End);
-                    //buf.Write(length);
-                    buf.Write(tmpbuf.Length);
-                    file.Write(buf, 0, sizeof(int));
-                    //file.Flush();
-                    var pos = file.Position;
-                    //file.Seek(16, SeekOrigin.Begin);
-                    buf.Write(pos);
-                    file.Write(buf, 0, sizeof(long));
-                    //file.Flush();
-                    //file.Seek(0, SeekOrigin.End);
-                    //}
+                    var length = file.Position - start;
+                    if (length > 0)
+                    {
+                        //if (file.Position != file.Length)
+                        //    file.Seek(0, SeekOrigin.End);
+                        buf.Write(length);
+                        buf.Write(tmpbuf.Length);
+                        file.Write(buf, 0, sizeof(int));
+                        file.Flush();
+                        var pos = file.Position;
+                        file.Seek(16, SeekOrigin.Begin);
+                        buf.Write(pos);
+                        file.Write(buf, 0, sizeof(long));
+                        file.Flush();
+                        file.Seek(pos, SeekOrigin.Begin);
+                    }
                 }
                 finally
                 {
@@ -125,7 +128,7 @@ Sed cursus neque in semper maximus. Integer condimentum erat vel porttitor maxim
                 //end FileLog.Appender.Dispose
             }
             clock.Stop();
-            Console.WriteLine("file size: {0} kB", file.Length);
+            Console.WriteLine("file size: {0} kB", file.Length / 1024);
         }
 
         static void MultiThreadTest()
