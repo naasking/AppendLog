@@ -21,20 +21,20 @@ writing to the log:
         /// Atomically append data to the durable store.
         /// </summary>
         /// <returns>A stream for writing.</returns>
-        IDisposable Append(out Stream output, out TransactionId tx);
+        Task<AppendRequest> Append();
 
         /// <summary>
         /// Enumerate the sequence of transactions since <paramref name="lastEvent"/>.
         /// </summary>
-        /// <param name="lastEvent">The last event seen.</param>
-        /// <returns>An enumerator over the transactions that occurred since the given event.</returns>
-        IEventEnumerator Replay(TransactionId lastEvent);
+        /// <param name="last">The last entry seen.</param>
+        /// <returns>An enumerator over the transactions that occurred since the given transaction.</returns>
+        ILogEnumerator Replay(TransactionId last);
     }
 
     /// <summary>
     /// An event enumerator.
     /// </summary>
-    public interface IEventEnumerator : IDisposable
+    public interface ILogEnumerator : IDisposable
     {
         /// <summary>
         /// The current transaction.
@@ -51,6 +51,22 @@ writing to the log:
         /// </summary>
         /// <returns></returns>
         Task<bool> MoveNext();
+    }
+	
+    /// <summary>
+    /// The result of an append request.
+    /// </summary>
+    public struct AppendRequest
+    {
+        /// <summary>
+        /// The TransactionId of this append request.
+        /// </summary>
+        public TransactionId Transaction { get; private set; }
+
+        /// <summary>
+        /// The stream to write.
+        /// </summary>
+        public Stream Stream { get; private set; }
     }
 
 Writing to the log involves simply calling `Append()`, which returns
@@ -87,7 +103,7 @@ This is precisely what's expected given log append is just a thin
 wrapper around FileStream.
 
 Durable commits require flushing to disk after all writes are
-complete, which yields about ~800 tx/second due to two flushes. The
+complete, which yields about ~3000 tx/second due to two flushes. The
 first ensures that an appended entry is written to disk, the second
 ensures the log header is updated to point to the new entry.
 
