@@ -12,7 +12,7 @@ namespace AppendLog
     /// <summary>
     /// An event enumerator.
     /// </summary>
-    public interface IEventEnumerator : IDisposable
+    public interface ILogEnumerator : IDisposable
     {
         /// <summary>
         /// The current transaction.
@@ -32,6 +32,44 @@ namespace AppendLog
     }
 
     /// <summary>
+    /// The result of an append request.
+    /// </summary>
+    public struct AppendRequest
+    {
+        /// <summary>
+        /// Initialize an append request.
+        /// </summary>
+        /// <param name="stream"></param>
+        /// <param name="transaction"></param>
+        public AppendRequest(Stream stream, TransactionId transaction) : this()
+        {
+            Stream = stream;
+            Transaction = transaction;
+        }
+
+        /// <summary>
+        /// The TransactionId of this append request.
+        /// </summary>
+        public TransactionId Transaction { get; private set; }
+
+        /// <summary>
+        /// The stream to write.
+        /// </summary>
+        public Stream Stream { get; private set; }
+
+        /// <summary>
+        /// Extract the stream and transaction id.
+        /// </summary>
+        /// <param name="transaction"></param>
+        /// <returns></returns>
+        public Stream Bind(out TransactionId transaction)
+        {
+            transaction = Transaction;
+            return Stream;
+        }
+    }
+
+    /// <summary>
     /// Interface for an atomic, durable transaction log.
     /// </summary>
     public interface IAppendLog : IDisposable
@@ -46,14 +84,13 @@ namespace AppendLog
         /// </summary>
         /// <param name="last">The last event seen.</param>
         /// <returns>A sequence of transactions since the given event.</returns>
-        IEventEnumerator Replay(TransactionId last);
+        ILogEnumerator Replay(TransactionId last);
         
         /// <summary>
         /// Atomically append data to the durable store.
         /// </summary>
-        /// <param name="transaction">The transaction being written.</param>
         /// <returns>A stream for appending to the log.</returns>
-        IDisposable Append(out Stream output, out TransactionId transaction);
+        Task<AppendRequest> Append();
     }
     
     /// <summary>

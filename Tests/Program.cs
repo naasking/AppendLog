@@ -1,6 +1,7 @@
 ﻿using System;
 using System.Threading;
 using System.IO;
+using System.IO.MemoryMappedFiles;
 using System.Collections.Generic;
 using System.Linq;
 using System.Threading.Tasks;
@@ -23,11 +24,12 @@ Sed cursus neque in semper maximus. Integer condimentum erat vel porttitor maxim
         static void Main(string[] args)
         {
             //BasicTest();
-            MultiThreadTest();
-            //SingleTest();
+            //MultiThreadTest();
+            SingleTest();
+            SingleTestMM();
         }
 
-        const int ITER = 3000;
+        const int ITER = 9000;
         static FileLog log;
         static byte[] tmpbuf;
 
@@ -38,57 +40,11 @@ Sed cursus neque in semper maximus. Integer condimentum erat vel porttitor maxim
             try
             {
                 var buf = new byte[sizeof(long)];
-                TransactionId tx;
                 tmpbuf = Encoding.ASCII.GetBytes(TXT);
                 using (var fs = new FileStream(path, FileMode.OpenOrCreate, FileAccess.ReadWrite, FileShare.ReadWrite, 4 * 4096, false))
                 {
-                    // log header
-                    fs.Write(buf, 0, sizeof(int));
-                    fs.Write(buf, 0, sizeof(int));
-                    fs.Write(buf, 0, sizeof(int));
-                    fs.Write(buf, 0, sizeof(int));
-                    fs.Write(buf, 0, sizeof(int));
-                    fs.Write(buf, 0, sizeof(int));
-
-                    clock.Start();
-                    for (int i = 0; i < 3 * ITER; ++i)
-                    {
-                        // begin FileLog.Append
-                        Monitor.Enter(fs);
-                        tx = log.First;
-                        var file = new BoundedStream(fs, fs.Length, int.MaxValue);
-                        try
-                        {
-                            var start = file.Position;
-
-                            // end FileLog.Append
-                            file.Write(tmpbuf, 0, tmpbuf.Length);
-
-                            // begin FileLog.Append.Dispose
-                            var length = file.Length - start;
-                            if (length > 0)
-                            {
-                                if (file.Position != file.Length)
-                                    file.Seek(0, SeekOrigin.End);
-                                buf.Write(length);
-                                file.Write(buf, 0, sizeof(int));
-                                file.Flush();
-                                var pos = file.Position;
-                                file.Seek(16, SeekOrigin.Begin);
-                                buf.Write(pos);
-                                file.Write(buf, 0, sizeof(long));
-                                file.Flush();
-                                file.Seek(0, SeekOrigin.End);
-                            }
-                        }
-                        finally
-                        {
-                            Monitor.Exit(fs);
-                        }
-                        //end FileLog.Appender.Dispose
-                    }
-                    clock.Stop();
-                    Console.WriteLine("Single size: {0} kB", fs.Length);
+                    SingleRun(clock, new BoundedStream(fs, 0, 64*1024));
+                    //SingleRun(clock, new BoundedStream(fs, 0, 64*1024*1024));
                 }
                 PrintStats("Single", clock.ElapsedMilliseconds);
             }
@@ -96,6 +52,80 @@ Sed cursus neque in semper maximus. Integer condimentum erat vel porttitor maxim
             {
                 File.Delete(path);
             }
+        }
+
+        static void SingleTestMM()
+        {
+            var clock = new Stopwatch();
+            var path = Path.GetFullPath("testmm.db");
+            try
+            {
+                var buf = new byte[sizeof(long)];
+                tmpbuf = Encoding.ASCII.GetBytes(TXT);
+                using (var map = MemoryMappedFile.CreateFromFile(path, FileMode.OpenOrCreate, "testmm", 128 * 1024 * 1024, MemoryMappedFileAccess.ReadWrite))
+                {
+                    using (var fs = map.CreateViewStream())
+                    {
+                        SingleRun(clock, fs);
+                    }
+                    PrintStats("SingleMM", clock.ElapsedMilliseconds);
+                }
+            }
+            finally
+            {
+                File.Delete(path);
+            }
+        }
+
+        static void SingleRun(Stopwatch clock, Stream file)
+        {
+            var buf = new byte[sizeof(long)];
+            // log header
+            file.Write(buf, 0, sizeof(int));
+            file.Write(buf, 0, sizeof(int));
+            file.Write(buf, 0, sizeof(int));
+            file.Write(buf, 0, sizeof(int));
+            file.Write(buf, 0, sizeof(int));
+            file.Write(buf, 0, sizeof(int));
+
+            clock.Start();
+            for (int i = 0; i < 3 * ITER; ++i)
+            {
+                // begin FileLog.Append
+                Monitor.Enter(file);
+                try
+                {
+                    var start = file.Position;
+
+                    file.Write(tmpbuf, 0, tmpbuf.Length);
+                    // end FileLog.Append
+
+                    // begin FileLog.Append.Dispose
+                    //var length = file.Length - start;
+                    //if (length > 0)
+                    //{
+                    //if (file.Position != file.Length)
+                    //    file.Seek(0, SeekOrigin.End);
+                    //buf.Write(length);
+                    buf.Write(tmpbuf.Length);
+                    file.Write(buf, 0, sizeof(int));
+                    //file.Flush();
+                    var pos = file.Position;
+                    //file.Seek(16, SeekOrigin.Begin);
+                    buf.Write(pos);
+                    file.Write(buf, 0, sizeof(long));
+                    //file.Flush();
+                    //file.Seek(0, SeekOrigin.End);
+                    //}
+                }
+                finally
+                {
+                    Monitor.Exit(file);
+                }
+                //end FileLog.Appender.Dispose
+            }
+            clock.Stop();
+            Console.WriteLine("file size: {0} kB", file.Length);
         }
 
         static void MultiThreadTest()
@@ -126,7 +156,7 @@ Sed cursus neque in semper maximus. Integer condimentum erat vel porttitor maxim
                     }
                 }
                 PrintStats("FileLog", clock.ElapsedMilliseconds);
-                Debug.Assert(count == 3 * ITER);
+                //Debug.Assert(count == 3 * ITER);
             }
             finally
             {
@@ -140,34 +170,32 @@ Sed cursus neque in semper maximus. Integer condimentum erat vel porttitor maxim
             TransactionId tx;
             for (int i = 0; i < ITER; ++i)
             {
-                Stream output;
-                using (log.Append(out output, out tx))
+                using (var buf = log.Append().Result.Bind(out tx))
                 {
-                    output.Write(tmpbuf, 0, tmpbuf.Length);
+                    buf.Write(tmpbuf, 0, tmpbuf.Length);
                 }
             }
         }
 
         static void PrintStats(string name, long ms)
         {
-            var secs = ms / 1000.0;
-            Console.WriteLine("{0}: {1:0} tx/sec", name, 3 * ITER / secs);
+            Console.WriteLine("{0}: {1:0} tx/sec", name, 3000 * ITER / ms);
         }
 
-        static void BasicTest()
+        static async void BasicTest()
         {
             var path = "basic.db";
             var log = FileLog.Create(path, false).Result;
             try
             {
-                TransactionId tx;
-                Stream buf;
-                using (log.Append(out buf, out tx))
+                var ar0 = await log.Append();
+                using (var buf = ar0.Stream)
                 {
                     buf.Write(Encoding.ASCII.GetBytes("hello"), 0, 5);
                     buf.Write(Encoding.ASCII.GetBytes("world!"), 0, 6);
                 }
-                using (log.Append(out buf, out tx))
+                var ar1 = await log.Append();
+                using (var buf = ar1.Stream)
                 {
                     buf.Write(Encoding.ASCII.GetBytes("hello"), 0, 5);
                     buf.Write(Encoding.ASCII.GetBytes("world!"), 0, 6);

@@ -29,9 +29,11 @@ namespace AppendLog
             Contract.Requires(length >= 0);
             this.length = length;
             this.underlying = underlying;
-            underlying.Seek(this.start = start, SeekOrigin.Begin);
+            //underlying.Seek(this.start = start, SeekOrigin.Begin);
             Contract.Assume(underlying.Position == start);
         }
+
+        public event Action<Stream> Disposed;
 
         ~BoundedStream()
         {
@@ -48,6 +50,14 @@ namespace AppendLog
             //Contract.Invariant(underlying.Position < start + length);
             //Contract.Invariant(length >= Position);
             Contract.Invariant(Position >= 0);
+        }
+
+        protected override void Dispose(bool disposing)
+        {
+            base.Dispose(disposing);
+            var x = Disposed;
+            if (disposing && x != null)
+                x(this);
         }
 
         public override long Seek(long offset, SeekOrigin origin)

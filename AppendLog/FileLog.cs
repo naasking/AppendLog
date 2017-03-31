@@ -19,6 +19,7 @@ namespace AppendLog
         long next;
         FileStream writer;
         readonly byte[] writeBuffer;
+        SemaphoreSlim sem = new SemaphoreSlim(1);
         
         // current log file version number
         internal static readonly Version VERSION = new Version(0, 0, 0, 1);
@@ -112,107 +113,78 @@ namespace AppendLog
         /// </summary>
         /// <param name="last">The last event seen.</param>
         /// <returns>A sequence of transactions since the given event.</returns>
-        public IEventEnumerator Replay(TransactionId last)
+        public ILogEnumerator Replay(TransactionId last)
         {
             if (!ReferenceEquals(path, last.Path))
                 throw new ArgumentException("last", "The given transaction is not for this log");
-            return new EventEnumerator(this, last);
+            return new LogEnumerator(this, last);
         }
 
         /// <summary>
         /// Atomically append data to the durable store.
         /// </summary>
-        /// <param name="transaction">The transaction being written.</param>
-        /// <param name="transaction">The transaction being written.</param>
         /// <returns>A stream for writing.</returns>
-        /// <remarks>
-        /// The <paramref name="async"/> parameter is largely optional, in that it's safe to simply
-        /// provide 'false' and everything will still work.
-        /// </remarks>
-        public IDisposable Append(out Stream output, out TransactionId transaction)
+        public async Task<AppendRequest> Append()
         {
             var x = writer;
-            if (x == null) throw new ObjectDisposedException(string.Format("FileLog ({0}) has been disposed.", path));
-            Monitor.Enter(x);
-            if (writer == null) throw new ObjectDisposedException(string.Format("FileLog ({0}) has been disposed.", path));
-            transaction = new TransactionId(next, path);
+            await sem.WaitAsync();
+            if (writer == null)
+            {
+                sem.Release();
+                throw new ObjectDisposedException(string.Format("FileLog ({0}) has been disposed.", path));
+            }
             x.Seek(next, SeekOrigin.Begin);
-            output = new BoundedStream(x, next, int.MaxValue);
-            return new Appender(this, writeBuffer);
+            var transaction = new TransactionId(next, path);
+            var output = new BoundedStream(x, next, int.MaxValue);
+            output.Disposed += FinishAppend;
+            return new AppendRequest(output, transaction);
         }
-        
+
         public void Dispose()
         {
             // we could track outstanding write stream and dispose of it, but there's nothing
             // dangerous or incorrect about letting writers finish in their own time
-            var x = Interlocked.Exchange(ref writer, null);
+            sem.Wait();
+            var x = writer;
             if (x != null)
             {
+                writer = null;
                 x.Close();
                 GC.SuppressFinalize(this);
             }
         }
 
         #region Internals
-        sealed class Appender : IDisposable
+        void FinishAppend(Stream stream)
         {
-            FileStream writer;
-            readonly FileLog log;
-            readonly byte[] buf;
-
-            public Appender(FileLog log, byte[] buf)
+            var x = writer;
+            if (x == null) return;
+            var length = (int)(x.Length - next);
+            if (length > 0)
             {
-                Contract.Requires(log != null);
-                Contract.Requires(buf != null);
-                Contract.Requires(buf.Length >= sizeof(long));
-                this.buf = buf;
-                this.log = log;
-                this.writer = log.writer;
+                // ensure stream points to the end of the written block
+                if (x.Length != x.Position)
+                    x.Seek(0, SeekOrigin.End);
+                // write the entry length into the EHDR block
+                writeBuffer.Write(length, 0);
+                x.Write(writeBuffer, 0, EHDR_SIZE);
+                x.Flush(true);
+                next += length + EHDR_SIZE;
+                writeBuffer.Write(next);
+                // write out position of new entry in the header
+                x.Seek(LHDR_TX, SeekOrigin.Begin);
+                x.Write(writeBuffer, 0, sizeof(long));
+                x.Flush(true);
+                sem.Release();
+                //FIXME: power loss here before disk write could lose the last tx, so 
+                //FIXME: it might be possible to get better write parallelism if we could release
+                //the semaphore just before calling flush. Other writers are only appending after all.
             }
-
-            ~Appender()
-            {
-                Dispose();
-            }
-
-            [ContractInvariantMethod]
-            void Invariants()
-            {
-                Contract.Invariant(log != null);
-                Contract.Invariant(buf != null);
-                Contract.Invariant(buf.Length >= sizeof(long));
-            }
-
-            public void Dispose()
-            {
-                var x = Interlocked.Exchange(ref writer, null);
-                if (x != null)
-                {
-                    var length = (int)(x.Length - log.next);
-                    if (length > 0)
-                    {
-                        // ensure stream points to the end of the written block
-                        if (x.Length != x.Position)
-                            x.Seek(0, SeekOrigin.End);
-                        // write the entry length into the EHDR block
-                        buf.Write(length, 0);
-                        x.Write(buf, 0, EHDR_SIZE);
-                        x.Flush(true);
-                        log.next += length + EHDR_SIZE;
-                        buf.Write(log.next);
-                        // write out position of new entry in the header
-                        x.Seek(LHDR_TX, SeekOrigin.Begin);
-                        x.Write(buf, 0, sizeof(long));
-                        x.Flush(true);
-                        //FIXME: power loss here before disk write could lose the last tx, so 
-                    }
-                    Monitor.Exit(x);
-                    GC.SuppressFinalize(this);
-                }
-            }
+            else
+                sem.Release();
         }
 
-        sealed class EventEnumerator : IEventEnumerator
+        sealed class LogEnumerator : ILogEnumerator
         {
             FileLog log;
             long length;
@@ -223,7 +195,7 @@ namespace AppendLog
             public TransactionId Transaction { get; internal set; }
             public Stream Stream { get; internal set; }
 
-            ~EventEnumerator()
+            ~LogEnumerator()
             {
                 Dispose();
             }
@@ -235,7 +207,7 @@ namespace AppendLog
                 Contract.Invariant(length >= 0);
             }
 
-            public EventEnumerator(FileLog log, TransactionId last)
+            public LogEnumerator(FileLog log, TransactionId last)
             {
                 Contract.Requires(log != null);
                 this.log = log;
