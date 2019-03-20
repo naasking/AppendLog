@@ -176,9 +176,21 @@ namespace AppendLog
                 x.Write(writeBuffer, 0, sizeof(long));
                 x.Flush(true);
                 sem.Release();
-                //FIXME: power loss here before disk write could lose the last tx, so 
-                //FIXME: it might be possible to get better write parallelism if we could release
-                //the semaphore just before calling flush. Other writers are only appending after all.
+
+                //FIXME: simple but better write parallelism:
+                // 1. If no other writers waiting, call second flush and return immediately.
+                // 2. If other writers waiting, release semaphore and enter waiting state. Next writer begins.
+                // 3. Wait until a flush is called by the new writer:
+                //    a) BoundedStream will raise event in case flush is called manually,
+                //    b) otherwise it will be called above when writing to EHDR.
+                // 4. original writer returns with complete transaction, and new writer enters step 1 above.
+                //This eliminates 1 flush on average with many writers, which should dramatically increase throughput,
+                //but it's not clear how robust it is. The EHDR flush might complete but the log header might not in
+                //case of power failure. Now we've lost two entries rather than one, but, they were never acknowledged
+                //as complete so it's not a consistency issue.
+
+                //FIXME: possibly decouple transaction commit from writer stream close/dispose. This way the transaction
+                //commit can also be made asynchronous.
             }
             else
                 sem.Release();
@@ -224,7 +236,7 @@ namespace AppendLog
                     return false;
                 length = lengths.Peek() + EHDR_SIZE;
                 Transaction = new TransactionId(txid, log.path);
-                Stream = new BoundedStream(file, txid, (int)length - EHDR_SIZE);
+                Stream = new BoundedStream(file, txid, (int)length - EHDR_SIZE); //FIXME: should be read-only
                 return true;
             }
 

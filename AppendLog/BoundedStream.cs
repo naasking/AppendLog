@@ -29,8 +29,11 @@ namespace AppendLog
             Contract.Requires(length >= 0);
             this.length = length;
             this.underlying = underlying;
+            this.start = start;
             //underlying.Seek(this.start = start, SeekOrigin.Begin);
             Contract.Assume(underlying.Position == start);
+
+            //FIXME: need to support a read-only mode, and only flush data and write header when not read-only.
         }
 
         public event Action<Stream> Disposed;
