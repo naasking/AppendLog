@@ -1,5 +1,5 @@
 ﻿using System;
-using System.Diagnostics.Contracts;
+using System.Diagnostics;
 using System.Runtime.Serialization;
 
 namespace AppendLog
@@ -42,7 +42,8 @@ namespace AppendLog
         /// <returns>True if they are equal, false otherwise.</returns>
         public bool Equals(TransactionId other)
         {
-            return Id == other.Id && ReferenceEquals(path, other.path);
+            return Id == other.Id
+                && ReferenceEquals(path, other.path);
         }
 
         /// <summary>
@@ -95,10 +96,10 @@ namespace AppendLog
             return left.Id != right.Id;
         }
 
-        #region Serialization interface
+#region Serialization interface
         TransactionId(SerializationInfo info, StreamingContext context)
         {
-            Contract.Requires(info != null);
+            Debug.Assert(info != null);
             id = info.GetInt64(nameof(id));
             var x = info.GetString(nameof(path));
             if (x == null) throw new ArgumentNullException("path");
@@ -110,6 +111,6 @@ namespace AppendLog
             info.AddValue(nameof(id), Id);
             info.AddValue(nameof(path), System.IO.Path.GetFileName(path));
         }
-        #endregion
+#endregion
     }
 }

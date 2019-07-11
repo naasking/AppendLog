@@ -3,9 +3,7 @@ using System.Threading.Tasks;
 using System.IO;
 using System.Collections.Generic;
 using System.Linq;
-using System.Text;
-using System.Diagnostics.Contracts;
-using System.Runtime.InteropServices;
+using System.Diagnostics;
 
 namespace AppendLog
 {
@@ -149,9 +147,9 @@ namespace AppendLog
         #region Internal marshalling to/from byte arrays in big endian format
         public static long ReadInt64(this byte[] x, int i = 0)
         {
-            Contract.Requires(x != null);
-            Contract.Requires(i + 7 < x.Length);
-            Contract.Requires(i >= 0);
+            Debug.Assert(x != null);
+            Debug.Assert(i + 7 < x.Length);
+            Debug.Assert(i >= 0);
             unchecked
             {
                 return (long)(BitConverter.IsLittleEndian
@@ -162,9 +160,9 @@ namespace AppendLog
 
         public static int ReadInt32(this byte[] x, int i = 0)
         {
-            Contract.Requires(x != null);
-            Contract.Requires(i + 3 < x.Length);
-            Contract.Requires(i >= 0);
+            Debug.Assert(x != null);
+            Debug.Assert(i + 3 < x.Length);
+            Debug.Assert(i >= 0);
             unchecked
             {
                 return (int)(BitConverter.IsLittleEndian
@@ -175,9 +173,9 @@ namespace AppendLog
 
         public static void Write(this byte[] x, int len, int i = 0)
         {
-            Contract.Requires(x != null);
-            Contract.Requires(i + 3 < x.Length);
-            Contract.Requires(i >= 0);
+            Debug.Assert(x != null);
+            Debug.Assert(i + 3 < x.Length);
+            Debug.Assert(i >= 0);
             unchecked
             {
                 if (BitConverter.IsLittleEndian)
@@ -199,9 +197,9 @@ namespace AppendLog
 
         public static void Write(this byte[] x, long id, int i = 0)
         {
-            Contract.Requires(x != null);
-            Contract.Requires(i + 7 < x.Length);
-            Contract.Requires(i >= 0);
+            Debug.Assert(x != null);
+            Debug.Assert(i + 7 < x.Length);
+            Debug.Assert(i >= 0);
             unchecked
             {
                 if (BitConverter.IsLittleEndian)

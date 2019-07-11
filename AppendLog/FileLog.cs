@@ -6,7 +6,7 @@ using System.Collections.Generic;
 using System.Linq;
 using System.Text;
 using System.IO;
-using System.Diagnostics.Contracts;
+using System.Diagnostics;
 
 namespace AppendLog
 {
@@ -34,9 +34,9 @@ namespace AppendLog
 
         FileLog(string path, FileStream writer, long next)
         {
-            Contract.Requires(!string.IsNullOrEmpty(path));
-            Contract.Requires(writer != null);
-            Contract.Requires(next >= LHDR_TX);
+            Debug.Assert(!string.IsNullOrEmpty(path));
+            Debug.Assert(writer != null);
+            Debug.Assert(next >= LHDR_TX);
             this.path = path;
             this.writer = writer;
             this.next = next;
@@ -48,14 +48,14 @@ namespace AppendLog
             Dispose();
         }
 
-        [ContractInvariantMethod]
-        void Invariants()
-        {
-            Contract.Invariant(!string.IsNullOrEmpty(path));
-            Contract.Invariant(next >= LHDR_TX);
-            Contract.Invariant(writeBuffer != null);
-            Contract.Invariant(writeBuffer.Length >= sizeof(long));
-        }
+        //[ContractInvariantMethod]
+        //void Invariants()
+        //{
+        //    Contract.Invariant(!string.IsNullOrEmpty(path));
+        //    Contract.Invariant(next >= LHDR_TX);
+        //    Contract.Invariant(writeBuffer != null);
+        //    Contract.Invariant(writeBuffer.Length >= sizeof(long));
+        //}
 
         /// <summary>
         /// An async FileLog constructor.
@@ -66,7 +66,7 @@ namespace AppendLog
         public static async Task<FileLog> Create(string path, bool useAsync)
         {
             if (path == null) throw new ArgumentNullException("path");
-            path = string.Intern(Path.GetFullPath(path));
+            path = Path.GetFullPath(path);
             var writer = new FileStream(path, FileMode.OpenOrCreate, FileAccess.ReadWrite, FileShare.Read, 4096, useAsync);
             var buf = new byte[LHDR_SIZE];
             // check the file's version number if file exists, else write it out and initialize the log
@@ -154,7 +154,7 @@ namespace AppendLog
             }
         }
 
-        #region Internals
+#region Internals
         void FinishAppend(Stream stream)
         {
             var x = writer;
@@ -212,16 +212,9 @@ namespace AppendLog
                 Dispose();
             }
 
-            [ContractInvariantMethod]
-            void Invariants()
-            {
-                Contract.Invariant(file != null);
-                Contract.Invariant(length >= 0);
-            }
-
             public LogEnumerator(FileLog log, TransactionId last)
             {
-                Contract.Requires(log != null);
+                Debug.Assert(log != null);
                 this.log = log;
                 this.file = new FileStream(log.path, FileMode.Open, FileAccess.Read, FileShare.ReadWrite, 4096, true);
                 this.length = last.Id;
@@ -264,6 +257,6 @@ namespace AppendLog
                 return lengths.Count == 0;
             }
         }
-        #endregion
+#endregion
     }
 }

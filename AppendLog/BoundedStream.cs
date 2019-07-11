@@ -2,8 +2,7 @@
 using System.IO;
 using System.Threading;
 using System.Threading.Tasks;
-using System.Runtime.Remoting;
-using System.Diagnostics.Contracts;
+using System.Diagnostics;
 
 namespace AppendLog
 {
@@ -24,14 +23,14 @@ namespace AppendLog
         /// <param name="length"></param>
         public BoundedStream(FileStream underlying, long start, int length)
         {
-            Contract.Requires(underlying != null);
-            Contract.Requires(start >= 0);
-            Contract.Requires(length >= 0);
+            if (underlying == null) throw new ArgumentNullException(nameof(underlying));
+            if (start < 0) throw new ArgumentOutOfRangeException(nameof(start), "The stream starting position must be >= 0.");
+            if (length < 0) throw new ArgumentOutOfRangeException(nameof(length), "The stream length must be >= 0.");
             this.length = length;
             this.underlying = underlying;
             this.start = start;
             //underlying.Seek(this.start = start, SeekOrigin.Begin);
-            Contract.Assume(underlying.Position == start);
+            Debug.Assert(underlying.Position == start);
 
             //FIXME: need to support a read-only mode, and only flush data and write header when not read-only.
         }
@@ -43,17 +42,18 @@ namespace AppendLog
             Dispose();
         }
 
-        [ContractInvariantMethod]
-        void Invaraints()
-        {
-            Contract.Invariant(underlying != null);
-            Contract.Invariant(start >= 0);
-            Contract.Invariant(length >= 0);
-            //Contract.Invariant(underlying.Position >= start);
-            //Contract.Invariant(underlying.Position < start + length);
-            //Contract.Invariant(length >= Position);
-            Contract.Invariant(Position >= 0);
-        }
+        //FIXME: call this at the end of each method and mark is [Debug]?
+        //[ContractInvariantMethod]
+        //void Invariants()
+        //{
+        //    Contract.Invariant(underlying != null);
+        //    Contract.Invariant(start >= 0);
+        //    Contract.Invariant(length >= 0);
+        //    //Contract.Invariant(underlying.Position >= start);
+        //    //Contract.Invariant(underlying.Position < start + length);
+        //    //Contract.Invariant(length >= Position);
+        //    Contract.Invariant(Position >= 0);
+        //}
 
         protected override void Dispose(bool disposing)
         {
@@ -90,7 +90,7 @@ namespace AppendLog
             if (value < 0) throw new ArgumentOutOfRangeException("value", "Attempted to set the value parameter to less than 0.");
             underlying.SetLength(value + start);
         }
-
+        
         public override IAsyncResult BeginRead(byte[] buffer, int offset, int count, AsyncCallback callback, object state)
         {
             count = Remainder(count);
@@ -100,6 +100,7 @@ namespace AppendLog
         {
             return underlying.BeginWrite(buffer, offset, Remainder(count), callback, state);
         }
+
         public override int Read(byte[] buffer, int offset, int count)
         {
             return underlying.Read(buffer, offset, Remainder(count));
@@ -139,12 +140,11 @@ namespace AppendLog
 
         int Remainder(int count)
         {
-            Contract.Requires(count >= 0);
-            Contract.Ensures(Contract.Result<int>() >= 0);
+            Debug.Assert(count >= 0);
             return Math.Min(count, Math.Max(0, (int)(length - Position)));
         }
 
-        #region Delegated operations
+#region Delegated operations
         public override bool CanRead
         {
             get { return underlying.CanRead; }
@@ -161,10 +161,12 @@ namespace AppendLog
         {
             get { return underlying.CanTimeout; }
         }
-        public override ObjRef CreateObjRef(Type requestedType)
+#if API_FULL
+        public override System.Runtime.Remoting.ObjRef CreateObjRef(Type requestedType)
         {
             return underlying.CreateObjRef(requestedType);
         }
+#endif
         public override int EndRead(IAsyncResult asyncResult)
         {
             return base.EndRead(asyncResult);
@@ -173,6 +175,10 @@ namespace AppendLog
         {
             underlying.EndWrite(asyncResult);
         }
+        public override object InitializeLifetimeService()
+        {
+            return underlying.InitializeLifetimeService();
+        }
         public override void Flush()
         {
             underlying.Flush();
@@ -180,10 +186,6 @@ namespace AppendLog
         public override Task FlushAsync(CancellationToken cancellationToken)
         {
             return underlying.FlushAsync(cancellationToken);
-        }
-        public override object InitializeLifetimeService()
-        {
-            return underlying.InitializeLifetimeService();
         }
         public override int ReadTimeout
         {
@@ -195,6 +197,6 @@ namespace AppendLog
             get { return underlying.WriteTimeout; }
             set { underlying.WriteTimeout = value; }
         }
-        #endregion
+#endregion
     }
 }
